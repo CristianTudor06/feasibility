@@ -6,6 +6,12 @@ __pycache__/
 # C extensions
 *.so
 
+# Original AI Studio export (kept locally for reference only)
+feasibility_initial/
+
+# Frontend (Node) - the build output in feasibility/static IS committed
+node_modules/
+
 # Distribution / packaging
 .Python
 build/
@@ -218,3 +224,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# The Python template above ignores lib/, which would hide the React source helpers
+!frontend/src/lib/

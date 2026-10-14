@@ -1,0 +1,62 @@
+/* Fonts are bundled locally so the app renders correctly on networks without internet access. */
+@import "@fontsource/inter/300.css";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+@import "@fontsource/space-grotesk/500.css";
+@import "@fontsource/space-grotesk/600.css";
+@import "@fontsource/space-grotesk/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-primary-dense: #2b6cb0;
+  --color-primary-dense-hover: #22548a;
+  --color-primary-dense-light: #ebf8ff;
+  --color-neutral-dark: #1a202c;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #f4f6f8;
+  color: #1a202c;
+}
+
+/* Custom gorgeous scrollbar for premium aesthetic */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* High density specific CSS styling helpers representing table groupings */
+.col-static {
+  background-color: #f0fff4 !important;
+}
+
+.col-variable {
+  background-color: #fff5f5 !important;
+}
+
+.col-output {
+  background-color: #ebf8ff !important;
+  font-weight: 600;
+}
+

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PLATFORM OPERATIONS & BUSINESS LOGIC BLUEPRINT</title>
+  <style>
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      line-height: 1.6;
+      color: #2D3748;
+      max-width: 900px;
+      margin: 40px auto;
+      padding: 0 20px;
+      background-color: #FAFAFA;
+    }
+    .doc-container {
+      background: #FFFFFF;
+      padding: 50px 60px;
+      border: 1px solid #E2E8F0;
+      border-radius: 8px;
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+    }
+    h1 {
+      color: #1A365D;
+      text-align: center;
+      font-size: 26px;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      text-align: center;
+      color: #4A5568;
+      font-style: italic;
+      font-size: 15px;
+      margin-bottom: 6px;
+    }
+    .sub-banner {
+      text-align: center;
+      color: #2B6CB0;
+      font-weight: bold;
+      font-size: 13px;
+      letter-spacing: 0.5px;
+      margin-bottom: 35px;
+    }
+    h2 {
+      color: #1A365D;
+      font-size: 18px;
+      border-bottom: 2px solid #E2E8F0;
+      padding-bottom: 6px;
+      margin-top: 32px;
+    }
+    h3 {
+      color: #2B6CB0;
+      font-size: 15px;
+      margin-top: 20px;
+      margin-bottom: 8px;
+    }
+    ul {
+      margin-top: 6px;
+      margin-bottom: 14px;
+      padding-left: 24px;
+    }
+    li {
+      margin-bottom: 6px;
+      font-size: 14px;
+    }
+    p {
+      font-size: 14px;
+      margin: 8px 0;
+    }
+    .red-text {
+      color: #C00000 !important;
+      font-weight: bold;
+    }
+    .sign-off {
+      text-align: right;
+      font-style: italic;
+      color: #718096;
+      font-size: 13px;
+      margin-top: 40px;
+      border-top: 1px solid #E2E8F0;
+      padding-top: 15px;
+    }
+    .download-bar {
+      text-align: center;
+      margin-bottom: 25px;
+    }
+    .btn-download {
+      background-color: #2B6CB0;
+      color: #FFFFFF;
+      padding: 10px 20px;
+      text-decoration: none;
+      font-weight: bold;
+      border-radius: 6px;
+      font-size: 14px;
+      display: inline-block;
+    }
+    .btn-download:hover {
+      background-color: #205081;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="download-bar">
+    <a href="/Platform_Operations_Blueprint.docx" download class="btn-download">
+      📥 Download as Microsoft Word (.docx)
+    </a>
+  </div>
+
+  <div class="doc-container">
+    <h1>PLATFORM OPERATIONS &amp; BUSINESS LOGIC BLUEPRINT</h1>
+    <div class="subtitle">Detailed Breakdown of Behind-The-Scenes Rules and Interactive Button Logic</div>
+    <div class="sub-banner">SYSTEM WORKFLOWS, FEASIBILITY METRICS, AUTO-CALCULATIONS AND SETUP CONFIGURATIONS</div>
+
+    <h2>1. FEASIBILITY ALLOCATION ENGINE RULES</h2>
+    <p>The platform embeds three discrete allocation strategies to calculate sample sizes and target CPIs across available panels. These rules maintain consistency across tabs:</p>
+
+    <h3>A. Cost-Optimized Strategy (Cheapest CPI First)</h3>
+    <ul>
+      <li>Internal Maximization: The algorithm always satisfies demand first using the Internal Panel (proprietary pool) up to the specified maximum internal percent ceiling (default is 100%, or user-defined).</li>
+      <li><span class="red-text">Internal 90% Near-Limit Diversity Rule (System Enhancement): If the effective internal capacity can satisfy the target sample size but is within 10% above the target (effective internal capacity &ge; target and &le; target &times; 1.10), the engine automatically limits internal allocation to 90% of the target. This forces the remaining 10% to be allocated across external vendors, ensuring panel diversity and preventing single-source exhaustion.</span></li>
+      <li>External sourcing: Any remaining unfilled quota is routed to active external Vendors. The vendors are sorted in ascending order based on their Cost Per Interview (CPI) rates.</li>
+      <li><span class="red-text">New Additional Rule (Similar Costs Tie-Breaker): If there are 2 vendors with similar costs (within $0.001), prioritize the capabilities (highest capacity) first, then the tier (Tier 0 &gt; Tier 1 &gt; Tier 2 &gt; Tier 3). If both cost and tier match, quality color flag acts as fallback: Green &gt; Yellow &gt; Orange.</span></li>
+      <li><span class="red-text">Single Covering Vendor Preference: Prior to splitting quota among multiple vendors, the engine checks if a single candidate vendor can cover 100% of the remaining unfilled sample at a valid CPI. If one exists, it is prioritized to minimize multi-supplier overlap penalties.</span></li>
+      <li>Cap Boundaries: The engine will allocate up to the maximum vendor capacity. If additional demand remains, it falls over to the next cheapest vendor.</li>
+      <li><span class="red-text">Targeted CPI Cap Enforcement: If a targeted CPI limit is defined on the row (Targeted CPI &gt; 0), any vendor whose cost per interview exceeds this threshold is strictly excluded from automated allocation.</span></li>
+    </ul>
+
+    <h3>B. Tier Priority Strategy (Quality Vetting Model)</h3>
+    <ul>
+      <li>Internal Maximization: Starts by exhausting the Internal Panel (proprietary pool).</li>
+      <li>Vetting Tiers: Remaining sample sizes are assigned based on strict Vendor Tiers: Tier 0 (Vendor 1), followed by Tier 1 (Vendor 2), Tier 2 (Vendor 3), and Tier 3 (Vendor 4).</li>
+      <li><span class="red-text">Tier Hierarchy &amp; Unassigned Vetting: Suppliers from the database pool without an assigned tier default to Priority Level 4 (placed strictly behind Tier 3).</span></li>
+      <li>Quality Sorting: If CPIs differ within the same Tier, cheaper CPIs are prioritized. This guarantees highest programmatic panel quality.</li>
+      <li><span class="red-text">New Additional Rule (Quality Sorting Precedence): If 2 vendors have similar costs, prioritize capabilities. The full sorting precedence evaluates: (1) Vendor Tier &gt; (2) Quality Color Flag (Green &gt; Yellow &gt; Orange) &gt; (3) Lowest CPI &gt; (4) Capabilities.</span></li>
+    </ul>
+
+    <h3>C. No Internal Cost Strategy (Bypassed Proprietary Pool)</h3>
+    <ul>
+      <li>Zero Internal Allocation: Bypasses the Internal Panel completely, forcing its allocated sample to exactly 0 to study external-only panel procurement impact.</li>
+      <li>Fallback Sourcing: Routes 100% of the target sample structure to the paid external Vendors using cheapest-first CPI.</li>
+      <li><span class="red-text">New Additional Rule (Same Costs Tie-Breaker): If external vendors have the exact same CPI, the engine prioritizes capabilities first (highest capacity), followed by Tier priority and quality color flag, ensuring maximum project feasibility.</span></li>
+    </ul>
+
+    <h3>D. Composite Overlap Penalty Calculations</h3>
+    <ul>
+      <li>Mechanism: Active panel overlap degrades real-world capacity. The engine assesses separate utilized programmatic streams.</li>
+      <li>Scale of Penalties: 1 utilized panel = 0% penalty. 2 utilized panels = 20% penalty. More than 2 utilized panels = 20% + 5% additional increment per supplier, capped at a maximum ceiling of 50% (1 panel = 0%, 2 panels = 20%, 3 = 25%, 4 = 30%, 5 = 35%, 6 = 40%, &gt;6 = 50%).</li>
+      <li>Capacity Impact: Effective capabilities and caps are reduced by multiplying raw volumes with (1 - penalty percentage). The engine iterates up to 10 cycles to converge allocations stably.</li>
+      <li><span class="red-text">New Additional Rule (Universal Overlap Scope): The overlap impacts all the max potential feasibilities when applicable, including the internal one; the overlap, once applied, is applied on all potential capabilities from all the vendors. Cumulative Max Potential = (Internal + &Sigma; Vendor Capacities) &times; (1 - Overlap Penalty %).</span></li>
+      <li><span class="red-text">Grid Column Overlap Representation: In the Database Grid, Vendor Max % columns dynamically display the overlap-penalized feasible capacity (rawCapacity &times; slider% &times; (1 - overlap%)). The Internal Max % column displays raw unpenalized database ratio (internal / target) unless a custom maximum internalization ceiling is applied.</span></li>
+      <li><span class="red-text">Manual Overlap Override: Each row features an interactive Overlap dropdown allowing procurement leads to force fixed overlap values from 0% to 50% (in 5% increments) or leave on 'Auto' for dynamic formula calculation.</span></li>
+    </ul>
+
+    <h2>2. INTERACTIVE BUTTON WORKFLOWS &amp; ACTIONS</h2>
+    <p>Behind each interactive button is a strict set of logical action sequences. The categories of rules for key buttons are defined below:</p>
+
+    <h3>A. 'Download BRD Document' Button (New Functional Requirement)</h3>
+    <ul>
+      <li>Purpose: Instantly compiles and downloads an executive-ready Business Requirements Document detailing backend frameworks, pseudocode, and firestore rules.</li>
+      <li>Logic Flow: Interrogates the active pitches and allocations, formats tables, and exports a raw .docx file entirely client-side with no external Google Drive dependencies.</li>
+      <li><span class="red-text">System Navigation &amp; Location: Currently accessible via the top-header 'Settings' dropdown menu labeled as Download BRD (.docx). An optional 'Create BRD in Google Docs' action is available when Google Workspace OAuth is connected.</span></li>
+    </ul>
+
+    <h3>B. 'Download Setup Manual' Button (New Functional Requirement)</h3>
+    <ul>
+      <li>Purpose: Generates this functional and administrative setup guide.</li>
+      <li>Logic Flow: Renders the categories of rules, calculations, and button action flows, delivering it directly to the local download folder.</li>
+      <li><span class="red-text">System Navigation &amp; Location: Currently located inside the header 'Settings' dropdown menu labeled as Download Setup (.docx). It is accompanied by a companion Download Board Deck (.pptx) button for executive slide deck exports.</span></li>
+    </ul>
+
+    <h3>C. 'Check Feasibility' Button</h3>
+    <ul>
+      <li>Purpose: Performs active lookup auditing against capabilities databases.</li>
+      <li>Logic Flow: Pulls live supplier capacity sheets. If offline, it queries the locally uploaded database, computing filled sample percentages, blended CPI rates, operational profits, and alerts completion.</li>
+      <li><span class="red-text">New Additional Rule (Capability Deduplication &amp; Priority): When checking for similar specs, if a vendor has different feasibilities in the database, higher/lower capabilities for the same specs, the higher capabilities will be prioritized. The system won't multiply the capabilities, using the same vendor's capabilities from multiple rows; it will be used only once per option.</span></li>
+      <li><span class="red-text">Three Distinct Evaluation Modes: The button provides a dropdown selection with 3 specialized workflows: (1) Feasibility for Targets (exact scenario targets), (2) Feasibility for Options (multi-scenario evaluation across pitch variations), and (3) Feasibility Optimized (unconstrained optimization across all 43 suppliers in the pool).</span></li>
+      <li><span class="red-text">Manual Overrides Safeguard Modal: If manual overrides are active (custom panel blends, CPI overrides, or internal caps), clicking Check Feasibility triggers a confirmation prompt offering 'Reset &amp; Run' (reverting to pure database defaults) or 'Keep &amp; Run' (preserving custom user adjustments intact).</span></li>
+    </ul>
+
+    <h3>D. 'Add New Vendor' Button</h3>
+    <ul>
+      <li>Purpose: Allows procurement leads to discover and enroll additional programmatic suppliers to tackle unfilled country deficits.</li>
+      <li>Logic Flow: Identifies active countries in specifications, compares them against unassigned suppliers inside the static Vendor Database Pool, selects the best matching vendor covering the highest number of active countries in your pitch, and appends the new supplier to the active workspace registry.</li>
+      <li><span class="red-text">New Additional Rule (Zero Share Allocation): The new supplier won't affect the current feasibility, it will have 0% share allocated, it will be used when manual share will be allocated.</span></li>
+      <li><span class="red-text">New Additional Rule (Database Capabilities &amp; CPI): The new suppliers will have their potential capabilities and prices from the database (same as the other ones).</span></li>
+      <li><span class="red-text">New Additional Rule (Overlap Impact on Max Feasible): Its capabilities will be added to the max feasible for each row and it will be impacted by the overlap (if overlap is applied).</span></li>
+      <li><span class="red-text">Candidate Waterfall Algorithm: The system selects candidates using a strict 4-stage hierarchy: (1) Country Coverage Match Count &gt; (2) Vendor Tier Quality (Tier 0 &gt; 1 &gt; 2 &gt; 3) &gt; (3) Quality Color Flag (Green &gt; Yellow &gt; Orange) &gt; (4) Total Feasibility Volume.</span></li>
+      <li><span class="red-text">Exhaustion Toast Alert: If no unassigned pool vendors cover active pitch countries, or all 43 suppliers have been added, the system displays an immediate notification: 'No vendors available'.</span></li>
+    </ul>
+
+    <h3>E. 'Reset / Clear All Overrides' Button</h3>
+    <ul>
+      <li>Purpose: Clears user-defined manual modifications to reset the optimization formulas.</li>
+      <li>Logic Flow: Resets all manual percent overrides (reverting to auto-allocation), clears custom maximum internalization values, and handles database clear-outs with optional backup recovery storage under the user's history dropdown.</li>
+      <li><span class="red-text">Interface Label &amp; Actions: Implemented in the Database Grid header as 'Reset Defaults'. Clicking opens a modal providing 'Save &amp; Reset' (prompts for backup name, stores in local storage) and 'Reset Without Saving' (reverts to factory defaults).</span></li>
+    </ul>
+
+    <h2>3. HIGH-DIALECTIC RUNTIME LOGIC</h2>
+
+    <h3>A. Real-Time Automatic Re-checking</h3>
+    <p>To eliminate manual effort, any manual coordinate or specifications adjustment (such as typing a new country name, modifying target sample size, changing LOI values, or altering incidence index percentage) instantly and seamlessly triggers a silent, background feasibility check. This guarantees that your financial charts, total metrics, filling rates, and feasibility allocations are kept dynamically synchronized with zero friction.</p>
+    <ul>
+      <li><span class="red-text">Toolbar Placement Specification: This will become a button on/off, called Live Feasibility - that will be added right after Insert Specs and Check feasibility (the button will be moved a little bit to the left, to have the same format as is now). When on, it will do the background feasibility check; when off, the Feasibility optimized button has to be clicked to start the assessment.</span></li>
+      <li><span class="red-text">Current Codebase Note: Live Feasibility is currently integrated within the Settings dropdown menu (Settings &gt; Feasibility Mode). Moving it to the main toolbar beside Insert Specs completes this UX requirement.</span></li>
+    </ul>
+
+    <h3>B. Country Autocomplete Dropdown</h3>
+    <p>Input text fields for Country and Market are enriched with a universal Autocomplete feature. Users can type any fragment of a country name, and a responsive dropdown filtered in real-time will appear. This eliminates spelling errors and ensures proper capabilities lookup matching.</p>
+    <ul>
+      <li><span class="red-text">Global ISO Taxonomy: Powered by a standardized datalist (#country-datalist) containing all recognized global sovereign markets and territories.</span></li>
+      <li><span class="red-text">Alphanumeric Normalization: User inputs and database records are normalized by lowercasing and stripping non-alphanumeric characters (.replace(/[^a-z0-9]/g, '')), ensuring seamless lookup matching across common variations (e.g. 'US' vs. 'United States', 'UK' vs. 'United Kingdom').</span></li>
+    </ul>
+
+    <div class="sign-off">
+      DataQuery Procurement AI — Operational Compliance Release Sign-off V1
+    </div>
+  </div>
+
+</body>
+</html>
