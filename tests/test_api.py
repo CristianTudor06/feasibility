@@ -87,6 +87,21 @@ def test_chat_cheapest_version_sets_strategy(client):
     assert body["updatedPitches"][0]["maxInternalPercent"] == 100
 
 
+@pytest.mark.parametrize("question, heading", [
+    ("what is the loi rule?", "LOI (Duration) Calculation Rule"),
+    ("explain the ir rule", "Incidence (IR%) Calculation Rule"),
+    ("fara cote", "Quotas Rule"),
+])
+def test_chat_explains_matching_rules(client, question, heading):
+    res = client.post("/api/chat", json={
+        "messages": [{"role": "user", "text": question}],
+        "dataState": {"pitches": [ROW]},
+    })
+    body = res.get_json()
+    assert heading in body["text"]
+    assert body["updatedPitches"] is None
+
+
 def test_xlsx_export(client):
     alloc = {"rowId": "row-1", "status": "Fully Feasible", "allocatedInternal": 400, "allocatedVendor1": 500,
              "allocatedVendor2": 100, "totalAllocated": 1000, "unfilledSample": 0, "externalCost": 2000,

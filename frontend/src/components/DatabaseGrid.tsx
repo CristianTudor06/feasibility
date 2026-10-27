@@ -1,13 +1,27 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import { FeasibilityRow, StrategyType, VendorTier } from '../types';
 import { parseCSVToPitches } from '../lib/csvParser';
-import { ALL_COUNTRIES } from '../data/countries';
+import { ALL_COUNTRIES, isValidCountry, getCanonicalCountryName } from '../data/countries';
 import { calculateAllRows, deduplicateDbRows } from '../lib/calculator';
+import { evaluateDbMatch } from '../lib/matching';
+import ComboboxCell from './ComboboxCell';
+import { 
+  GLOBAL_ALL_LOIS, 
+  GLOBAL_ALL_IRS, 
+  GLOBAL_ALL_UNIVERSES, 
+  GLOBAL_ALL_QUOTAS, 
+  ALL_DB_COUNTRIES,
+  getDbCountries,
+  getCountryPreExistingSpecs,
+  getCountrySpecsByUniverse,
+  ATTACHED_REFERENCE_SPECS
+} from '../data/attachedSpecsData';
 import { VENDOR_DATABASE_POOL } from '../data/defaultData';
 import { 
   FileSpreadsheet, 
   Search, 
   RefreshCw, 
+  RotateCcw,
   Trash2, 
   Plus, 
   FileUp, 
@@ -30,6 +44,9 @@ import {
   Lock,
   Unlock,
   ChevronDown,
+  Database,
+  ChevronLeft,
+  ChevronRight,
   X
 } from 'lucide-react';
 
@@ -59,6 +76,48 @@ interface DatabaseGridProps {
   insertedDatabase?: any;
   targetedBudget?: number;
   feasibilityFontSizeDelta?: number;
+}
+
+function InstantTooltip({
+  text,
+  children,
+  position = 'bottom'
+}: {
+  text?: string;
+  children?: React.ReactNode;
+  position?: 'top' | 'bottom';
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  if (!text) return <>{children}</>;
+  return (
+    <span 
+      className="relative inline-flex items-center cursor-help"
+      title={text}
+      onMouseEnter={() => setIsOpen(true)}
+      onMouseLeave={() => setIsOpen(false)}
+    >
+      {children}
+      {isOpen && (
+        <span
+          className={`pointer-events-none absolute z-[99999] flex flex-col ${
+            position === 'top'
+              ? 'bottom-full left-0 mb-1.5'
+              : 'top-full left-0 mt-1.5'
+          }`}
+          style={{ minWidth: '180px', maxWidth: '320px' }}
+        >
+          <span className="bg-slate-900 text-white text-[11px] font-sans font-medium px-2.5 py-1.5 rounded-md shadow-2xl border border-slate-700 whitespace-normal text-left leading-snug">
+            {text}
+          </span>
+          {position === 'top' ? (
+            <span className="w-1.5 h-1.5 bg-slate-900 rotate-45 -mt-1 ml-4 border-r border-b border-slate-700"></span>
+          ) : (
+            <span className="w-1.5 h-1.5 bg-slate-900 rotate-45 -mb-1 ml-4 order-first border-l border-t border-slate-700"></span>
+          )}
+        </span>
+      )}
+    </span>
+  );
 }
 
 export default function DatabaseGrid({
@@ -97,35 +156,35 @@ export default function DatabaseGrid({
   const [editingCell, setEditingCell] = useState<{ rowId: string; field: keyof FeasibilityRow } | null>(null);
   const [tempEditValue, setTempEditValue] = useState('');
   const [helpOpen, setHelpOpen] = useState(false);
-  const [toastNotification, setToastNotification] = useState<{ message: string; type: 'info' | 'error' | 'success' } | null>(null);
+  const setToastNotification = (_val: any) => {};
 
-  React.useEffect(() => {
-    if (toastNotification) {
-      const timer = setTimeout(() => {
-        setToastNotification(null);
-      }, 4000);
-      return () => clearTimeout(timer);
-    }
-  }, [toastNotification]);
-  
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const activeDbCountries = useMemo(() => getDbCountries(insertedDatabase), [insertedDatabase]);
 
-  // Extract unique markets
-  const markets = ['All', ...Array.from(new Set(pitches.map((p) => p.market)))];
+  const markets = useMemo(() => ['All', ...Array.from(new Set(pitches.map((p) => p.market)))], [pitches]);
 
-  const allocations = passedAllocations || calculateAllRows(pitches, activeStrategy, vendors);
+  const allocations = useMemo(() => passedAllocations || calculateAllRows(pitches, activeStrategy, vendors), [passedAllocations, pitches, activeStrategy, vendors]);
 
-  // Search/Filter
-  const filteredPitches = pitches.filter((pitch) => {
-    const matchesSearch =
-      pitch.pitchName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      pitch.market.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      pitch.target.toLowerCase().includes(searchQuery.toLowerCase());
-    
-    const matchesMarket = selectedMarket === 'All' || pitch.market === selectedMarket;
+  // Search/Filter for Scenarios
+  const filteredPitches = useMemo(() => {
+    return pitches.filter((pitch) => {
+      const matchesSearch =
+        pitch.pitchName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        pitch.market.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        pitch.target.toLowerCase().includes(searchQuery.toLowerCase());
+      
+      const matchesMarket = selectedMarket === 'All' || pitch.market === selectedMarket;
 
-    return matchesSearch && matchesMarket;
-  });
+      return matchesSearch && matchesMarket;
+    });
+  }, [pitches, searchQuery, selectedMarket]);
+
+  const updatePitchesAndDecheck = (newPitches: FeasibilityRow[]) => {
+    onUpdatePitches(newPitches);
+    if (setHasChecked) {
+      setHasChecked(false);
+    }
+  };
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -134,13 +193,6 @@ export default function DatabaseGrid({
       setDragActive(true);
     } else if (e.type === "dragleave") {
       setDragActive(false);
-    }
-  };
-
-  const updatePitchesAndDecheck = (newPitches: FeasibilityRow[]) => {
-    onUpdatePitches(newPitches);
-    if (setHasChecked) {
-      setHasChecked(false);
     }
   };
 
@@ -159,7 +211,10 @@ export default function DatabaseGrid({
           }
         }
       } catch (err: any) {
-        alert(`Error parsing CSV file: ${err.message || err}`);
+        setToastNotification({
+          message: `Error parsing CSV file: ${err.message || err}`,
+          type: 'error'
+        });
       }
     };
     reader.readAsText(file);
@@ -217,6 +272,10 @@ export default function DatabaseGrid({
       comparability: 'High'
     };
     updatePitchesAndDecheck([...pitches, newRow]);
+    setToastNotification({
+      message: `Added new blank scenario.`,
+      type: "success"
+    });
   };
 
   // Duplicate scenario option ("Button to save and copy the option")
@@ -231,6 +290,10 @@ export default function DatabaseGrid({
     };
 
     updatePitchesAndDecheck([...pitches, duplicatedCell]);
+    setToastNotification({
+      message: `Duplicated scenario "${origin.option}" to bottom.`,
+      type: "success"
+    });
   };
 
   const handleToggleLockRow = (rowId: string) => {
@@ -255,12 +318,17 @@ export default function DatabaseGrid({
     const target = pitches.find(p => p.id === id);
     if (!target) return;
     if (target.isLocked) {
-      alert("This line is locked and cannot be deleted!");
+      setToastNotification({
+        message: "This line is locked and cannot be deleted!",
+        type: "error"
+      });
       return;
     }
-    const ok = window.confirm("Are you sure you want to delete this option specs line?");
-    if (!ok) return;
     updatePitchesAndDecheck(pitches.filter((p) => p.id !== id));
+    setToastNotification({
+      message: `Deleted scenario "${target.option}".`,
+      type: "info"
+    });
   };
 
   // Inline grid cell double-click editing saves instantly
@@ -301,7 +369,7 @@ export default function DatabaseGrid({
               delete (nextPitch as any)[field];
               return nextPitch;
             } else {
-              value = Math.max(0, num);
+              value = Math.max(0, Math.min(100, num));
             }
           }
         } else if (
@@ -327,6 +395,52 @@ export default function DatabaseGrid({
     setEditingCell(null);
   };
 
+  const handleCellSave = (rowId: string, field: keyof FeasibilityRow, rawVal: string) => {
+    const updated = pitches.map((pitch) => {
+      if (pitch.id === rowId) {
+        let value: any = rawVal;
+        const lower = String(rawVal || '').trim().toLowerCase();
+
+        if (field === 'market') {
+          if (lower.startsWith('insert') || lower === '') {
+            value = '';
+          } else {
+            value = getCanonicalCountryName(rawVal) || rawVal.trim();
+          }
+        } else if (field === 'irPercent') {
+          if (lower.startsWith('insert') || lower === '' || lower === 'none' || lower === '0' || lower === '0%') {
+            value = 0;
+          } else {
+            let num = parseFloat(rawVal.replace('%', '').trim());
+            if (isNaN(num)) num = 0;
+            value = num > 1 ? num / 100 : num;
+          }
+        } else if (field === 'loi') {
+          if (lower.startsWith('insert') || lower === '' || lower === 'none' || lower === '0') {
+            value = 0;
+          } else {
+            value = parseFloat(rawVal.replace(/[^0-9.-]/g, '')) || 0;
+          }
+        } else if (field === 'irUniverse') {
+          if (lower.startsWith('insert') || lower === '' || lower === 'none') {
+            value = '';
+          } else {
+            value = rawVal.trim();
+          }
+        } else if (field === 'quotas') {
+          if (lower.startsWith('insert') || lower === '') {
+            value = 'No quotas';
+          } else {
+            value = rawVal.trim();
+          }
+        }
+        return { ...pitch, [field]: value };
+      }
+      return pitch;
+    });
+    updatePitchesAndDecheck(updated);
+  };
+
   const handleAddNewVendor = () => {
     if (!vendors || !onUpdateVendors) {
       setToastNotification({ message: "Vendor updating is unavailable in this view.", type: "error" });
@@ -335,6 +449,9 @@ export default function DatabaseGrid({
 
     const activeNames = vendors.map(v => v.name.toLowerCase().trim());
     const candidates = VENDOR_DATABASE_POOL.filter(candidate => {
+      const isDoNotUse = String(candidate.tier || '').toLowerCase().includes('do not use');
+      const isRed = String(candidate.color || '').toLowerCase() === 'red';
+      if (isDoNotUse || isRed) return false;
       return !activeNames.includes(candidate.name.toLowerCase().trim());
     });
 
@@ -345,18 +462,22 @@ export default function DatabaseGrid({
 
     const getTierPriority = (tier: string) => {
       const t = String(tier || '').toLowerCase();
+      if (t.includes('do not use')) return 999;
       if (t.includes('0') || t.includes('prime')) return 0;
       if (t.includes('1')) return 1;
       if (t.includes('2')) return 2;
       if (t.includes('3')) return 3;
+      if (t.includes('no tier')) return 4;
       return 4;
     };
 
     const getColorPriority = (color: string) => {
       const c = String(color || '').toLowerCase();
+      if (c === 'red') return 999;
       if (c === 'green') return 1;
       if (c === 'yellow') return 2;
       if (c === 'orange') return 3;
+      if (c === 'grey' || c === 'gray') return 4;
       return 4;
     };
 
@@ -374,28 +495,12 @@ export default function DatabaseGrid({
 
         // 1. Check inserted database if loaded
         if (insertedDatabase && insertedDatabase.length > 0 && vendorNum > 0) {
-          const matches = insertedDatabase.filter((dbRow: any) => {
-            const m1 = String(dbRow.market || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-            const m2 = String(pitch.market || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-            if (m1 !== m2) return false;
-
-            const t1 = String(dbRow.target || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-            const t2 = String(pitch.target || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-            const u1 = String(dbRow.irUniverse || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-            const u2 = String(pitch.irUniverse || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-
-            return (
-              t1 === t2 ||
-              u1 === u2 ||
-              (t1 && t2 && (t1.includes(t2) || t2.includes(t1))) ||
-              (u1 && u2 && (u1.includes(u2) || u2.includes(u1)))
-            );
-          });
+          const matches = insertedDatabase.filter((dbRow: any) => evaluateDbMatch(pitch, dbRow).isMatch);
 
           const deduplicatedMatches = deduplicateDbRows(matches);
-          const capSum = deduplicatedMatches.reduce((sum: number, r: any) => sum + (parseInt(r[dbCapKey], 10) || 0), 0);
-          if (capSum > 0) {
-            lineCap = capSum;
+          const maxCap = deduplicatedMatches.reduce((max: number, r: any) => Math.max(max, parseInt(r[dbCapKey], 10) || 0), 0);
+          if (maxCap > 0) {
+            lineCap = maxCap;
           }
         }
 
@@ -477,31 +582,17 @@ export default function DatabaseGrid({
       let realCpi = 0;
 
       const dbSearchSource = insertedDatabase || [];
-      const matches = dbSearchSource.filter((dbRow: any) => {
-        const m1 = String(dbRow.market || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        const m2 = String(pitch.market || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (m1 !== m2) return false;
-
-        const t1 = String(dbRow.target || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        const t2 = String(pitch.target || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        const u1 = String(dbRow.irUniverse || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        const u2 = String(pitch.irUniverse || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-
-        return (
-          t1 === t2 ||
-          u1 === u2 ||
-          (t1 && t2 && (t1.includes(t2) || t2.includes(t1))) ||
-          (u1 && u2 && (u1.includes(u2) || u2.includes(u1)))
-        );
-      });
+      const matches = dbSearchSource.filter((dbRow: any) => evaluateDbMatch(pitch, dbRow).isMatch);
 
       if (matches.length > 0 && vendorNumInDb > 0) {
         const deduplicatedMatches = deduplicateDbRows(matches);
-        realCapacity = deduplicatedMatches.reduce((sum: number, r: any) => sum + (parseInt(r[dbCapKey], 10) || 0), 0);
+        realCapacity = deduplicatedMatches.reduce((max: number, r: any) => Math.max(max, parseInt(r[dbCapKey], 10) || 0), 0);
         for (const mr of deduplicatedMatches) {
           const val = parseFloat(mr[dbCpiKey]);
           if (val > 0) {
-            realCpi = val;
+            if (realCpi === 0 || val < realCpi) {
+              realCpi = val;
+            }
           }
         }
       }
@@ -546,29 +637,6 @@ export default function DatabaseGrid({
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden animate-fade-in relative" id="fe-specs-grid-container">
-      {toastNotification && (
-        <div className={`fixed top-5 right-5 z-50 flex items-center gap-3 px-4 py-3 rounded-xl shadow-xl border text-sm font-semibold transition-all animate-fade-in ${
-          toastNotification.type === 'error'
-            ? 'bg-amber-50 border-amber-300 text-amber-900 shadow-amber-900/10'
-            : toastNotification.type === 'success'
-            ? 'bg-emerald-50 border-emerald-300 text-emerald-900 shadow-emerald-900/10'
-            : 'bg-blue-50 border-blue-300 text-blue-900 shadow-blue-900/10'
-        }`} id="fe-toast-notification">
-          {toastNotification.type === 'error' ? (
-            <AlertCircle className="h-5 w-5 shrink-0 text-amber-600" />
-          ) : (
-            <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" />
-          )}
-          <span>{toastNotification.message}</span>
-          <button
-            onClick={() => setToastNotification(null)}
-            className="ml-2 p-1 rounded-md hover:bg-black/5 text-slate-500 hover:text-slate-700"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      )}
-      
       {/* Header Widget */}
       <div className="p-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-50/50">
         <div className="flex flex-wrap items-center gap-3">
@@ -580,7 +648,7 @@ export default function DatabaseGrid({
               placeholder="Search pitches, targets..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 pr-4 py-1.5 w-60 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#2b6cb0] focus:border-[#2b6cb0]"
+              className="pl-9 pr-4 py-1.5 w-64 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#2b6cb0] focus:border-[#2b6cb0]"
             />
           </div>
 
@@ -598,9 +666,10 @@ export default function DatabaseGrid({
 
         <div className="flex flex-wrap items-center gap-2">
           <button
+            type="button"
             id="add-new-vendor-btn"
             onClick={handleAddNewVendor}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-[#2b6cb0] bg-blue-50 border border-blue-200 rounded-lg hover:text-[#205080] hover:bg-blue-100 transition"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-[#2b6cb0] bg-blue-50 border border-blue-200 rounded-lg hover:text-[#205080] hover:bg-blue-100 transition cursor-pointer"
           >
             <Plus className="h-4 w-4" />
             Add new vendor
@@ -614,8 +683,9 @@ export default function DatabaseGrid({
             className="hidden"
           />
           <button
+            type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-800 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-800 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition cursor-pointer"
             id="insert-specs-btn"
           >
             <FileUp className="h-4 w-4 text-[#2b6cb0]" />
@@ -623,27 +693,31 @@ export default function DatabaseGrid({
           </button>
 
           <button
+            type="button"
             id="add-blank-row"
             onClick={handleAddRow}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition cursor-pointer"
           >
             <Plus className="h-4 w-4 text-emerald-600" />
             Add Scenario
           </button>
 
           <button
-            id="reset-db-btn"
+            type="button"
+            id="reset-quote-db-btn"
             onClick={onResetToDefault}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-lg hover:text-slate-900 hover:bg-slate-50 transition"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition shadow-xs cursor-pointer"
+            title="Reset Quote: clear all audiences, set budget to 0, and clear all lines"
           >
-            <RefreshCw className="h-3.5 w-3.5" />
-            Reset Defaults
+            <RotateCcw className="h-3.5 w-3.5 text-rose-600" />
+            Reset Quote
           </button>
 
           <button
+            type="button"
             id="help-toggle-btn"
             onClick={() => setHelpOpen(!helpOpen)}
-            className="p-1.5 text-slate-500 hover:text-slate-800 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition"
+            className="p-1.5 text-slate-500 hover:text-slate-800 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition cursor-pointer"
             title="Formatting help"
           >
             <HelpCircle className="h-4 w-4" />
@@ -688,7 +762,7 @@ export default function DatabaseGrid({
             <p className="text-xs text-slate-500 mt-1">Accepts country-pitch specs in 21-column layout.</p>
           </div>
         ) : (
-          <div className="overflow-x-auto relative">
+          <div className="overflow-x-auto relative pb-44 min-h-[360px]">
             {filteredPitches.length === 0 ? (
               <div className="text-center py-12 px-4 bg-slate-50/20">
                 <FileSpreadsheet className="h-12 w-12 text-slate-300 mx-auto mb-3" />
@@ -698,7 +772,10 @@ export default function DatabaseGrid({
                 </p>
               </div>
             ) : (
-              <table className="w-full text-left border-collapse" style={{ fontSize: feasibilityFontSizeDelta === -1 ? '11px' : feasibilityFontSizeDelta === 1 ? '13px' : '12px' }}>
+              <table
+                className="w-full text-left border-collapse dynamic-feasibility-grid"
+                style={{ '--grid-font-size': `${12 + (feasibilityFontSizeDelta || 0) * 1.5}px` } as React.CSSProperties}
+              >
                 <thead>
                   {/* Category Headers Row */}
                   <tr className="bg-[#2b6cb0]/10 border-b border-[#2b6cb0]/20 text-[10px] font-bold tracking-wider text-[#205080]">
@@ -758,6 +835,7 @@ export default function DatabaseGrid({
                     <th className="p-2">Feasibility Status</th>
                     <th className="p-2 text-right text-[#2b6cb0]">feasible</th>
                     <th className="p-2 text-right text-rose-700">missing</th>
+                    <th className="p-2 text-right text-rose-600 font-bold" title="Missing sample as a percentage of target size">missing %</th>
                     <th className="p-2 text-right text-[#205080]" title="Specs Potential max feasible">max feasible</th>
                     <th className="p-2 text-center text-slate-800">Internal/Ext Share</th>
                     <th className="p-2 text-center text-slate-705 font-bold" title="Number of external vendors utilized">Nr of vendors</th>
@@ -905,37 +983,69 @@ export default function DatabaseGrid({
                     const rowOpCosts = (alloc.externalCost || 0) + (alloc.internalCostRef || 0);
                     const rowOpPct = rowRevenue > 0 ? ((rowRevenue - rowOpCosts) / rowRevenue) * 100 : 0;
 
+                    const pitchSpecs = getCountrySpecsByUniverse(pitch.market, pitch.irUniverse, insertedDatabase);
+
+                    const getUnfeasibleReason = (p: FeasibilityRow, specs: any): string => {
+                      if (!p.market || !isValidCountry(p.market) || String(p.market).startsWith('Insert')) {
+                        return 'Missing or invalid country';
+                      }
+                      if (!p.irPercent || p.irPercent <= 0 || String(p.irPercent).toLowerCase().startsWith('insert')) {
+                        return 'Missing: Incidence (IR%)';
+                      }
+                      if (!p.loi || p.loi <= 0 || String(p.loi).toLowerCase().startsWith('insert')) {
+                        return 'Missing: Duration (LOI)';
+                      }
+                      if (!p.irUniverse || String(p.irUniverse).trim() === '' || String(p.irUniverse).toLowerCase().startsWith('insert')) {
+                        return 'Missing: Universe (IR universe)';
+                      }
+                      if (specs.preExistingUniverses && specs.preExistingUniverses.length > 0) {
+                        const cleanUniverse = p.irUniverse.toLowerCase().trim();
+                        const exists = specs.preExistingUniverses.some((u: string) => u.toLowerCase().trim() === cleanUniverse);
+                        if (!exists) {
+                          return 'Universe not found in database for this country';
+                        }
+                      }
+                      const totalCap = (p.internal || 0) + (p.vendor1 || 0) + (p.vendor2 || 0) + (p.vendor3 || 0) + (p.vendor4 || 0);
+                      if (totalCap === 0) {
+                        return 'Capacity is 0 in database for specified parameters';
+                      }
+                      if (p.totalSampleSize <= 0) {
+                        return 'Missing: Target Sample Size';
+                      }
+                      return 'Incomplete feasibility / No vendor covers demand';
+                    };
+
+                    const unfeasibleReason = getUnfeasibleReason(pitch, pitchSpecs);
+
                     return (
                       <tr 
                         key={pitch.id} 
                         className="hover:bg-slate-50/50 transition-colors group text-[11px]"
                       >
-                        {/* 2. Country / Market */}
+                        {/* 2. Country / Market with Autocomplete combobox */}
                         <td className="p-2 col-static text-slate-800 font-bold">
-                          {isEditingMarket ? (
-                            <input
-                              type="text"
-                              value={tempEditValue}
-                              onChange={(e) => setTempEditValue(e.target.value)}
-                              onBlur={saveInlineEdit}
-                              onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
-                              autoFocus
-                              list="country-datalist"
-                              className="px-1 border border-[#2b6cb0] rounded-md bg-white text-slate-800 w-full"
-                            />
-                          ) : (
-                            <span 
-                              onDoubleClick={() => startEditing(pitch.id, 'market', pitch.market)}
-                              className="cursor-pointer border-b border-dashed border-slate-200 hover:border-slate-800 font-bold text-slate-900 inline-block min-w-[70px] min-h-[1.5em] align-middle select-none"
-                              title="Double click to edit country"
-                            >
-                              {String(pitch.market || '').trim() || (
-                                <span className="text-slate-400 italic font-normal text-[10px] bg-slate-50 px-1.5 py-0.5 rounded border border-slate-150">
-                                  (Empty)
+                          <ComboboxCell
+                            value={pitch.market}
+                            onSave={(val) => handleCellSave(pitch.id, 'market', val)}
+                            options={ALL_COUNTRIES}
+                            preExistingOptions={activeDbCountries}
+                            specType="country"
+                            placeholder="Insert country"
+                            displayValue={
+                              <div className="flex items-center gap-1.5">
+                                <span className={isValidCountry(pitch.market) ? 'text-slate-900 font-bold' : 'text-slate-400 italic font-normal'}>
+                                  {getCanonicalCountryName(pitch.market) || pitch.market || 'Insert country'}
                                 </span>
-                              )}
-                            </span>
-                          )}
+                                {!isValidCountry(pitch.market) && pitch.market && (
+                                  <span className="text-[9px] font-bold text-rose-600 bg-rose-100 px-1 py-0.2 rounded border border-rose-200 uppercase tracking-tight shrink-0" title="Unrecognized country: 0 output">
+                                    0 output
+                                  </span>
+                                )}
+                              </div>
+                            }
+                            align="left"
+                            widthClass="w-36"
+                          />
                         </td>
 
                         {/* 3. Target Size */}
@@ -952,6 +1062,7 @@ export default function DatabaseGrid({
                             />
                           ) : (
                             <span 
+                              onClick={() => startEditing(pitch.id, 'totalSampleSize', pitch.totalSampleSize)}
                               onDoubleClick={() => startEditing(pitch.id, 'totalSampleSize', pitch.totalSampleSize)}
                               className="cursor-pointer border-b border-dashed border-slate-200 hover:border-slate-800"
                             >
@@ -960,92 +1071,64 @@ export default function DatabaseGrid({
                           )}
                         </td>
 
-                        {/* 4. LOI */}
+                        {/* 4. LOI (1..100 range, green DB ones, grey others) */}
                         <td className="p-2 col-static font-mono text-center">
-                          {editingCell?.rowId === pitch.id && editingCell?.field === 'loi' ? (
-                            <input
-                              type="text"
-                              value={tempEditValue}
-                              onChange={(e) => setTempEditValue(e.target.value)}
-                              onBlur={saveInlineEdit}
-                              onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
-                              autoFocus
-                              className="w-12 px-1 text-center border border-[#2b6cb0] rounded-md bg-white text-slate-930 font-sans"
-                            />
-                          ) : (
-                            <span
-                              onDoubleClick={() => startEditing(pitch.id, 'loi', pitch.loi)}
-                              className="cursor-pointer border-b border-dashed border-slate-200 hover:border-slate-800"
-                            >
-                              {pitch.loi}m
-                            </span>
-                          )}
+                          <ComboboxCell
+                            value={pitch.loi && pitch.loi > 0 ? pitch.loi : ''}
+                            onSave={(val) => handleCellSave(pitch.id, 'loi', val)}
+                            options={pitchSpecs.loiDropdownOptions}
+                            preExistingOptions={pitchSpecs.preExistingLois}
+                            specType="loi"
+                            placeholder="Insert LOI"
+                            displayValue={pitch.loi && pitch.loi > 0 ? `${pitch.loi}m` : undefined}
+                            align="center"
+                            widthClass="w-20"
+                          />
                         </td>
 
-                        {/* 5. IR% */}
+                        {/* 5. IR% (1%..100% range, green DB ones, grey others) */}
                         <td className="p-2 col-static font-mono text-center font-bold text-emerald-950">
-                          {editingCell?.rowId === pitch.id && editingCell?.field === 'irPercent' ? (
-                            <input
-                              type="text"
-                              value={tempEditValue}
-                              onChange={(e) => setTempEditValue(e.target.value)}
-                              onBlur={saveInlineEdit}
-                              onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
-                              autoFocus
-                              className="w-12 px-1 text-center border border-[#2b6cb0] rounded-md bg-white text-slate-935 font-sans font-bold"
-                            />
-                          ) : (
-                            <span
-                              onDoubleClick={() => startEditing(pitch.id, 'irPercent', (pitch.irPercent * 100).toFixed(0) + '%')}
-                              className="cursor-pointer border-b border-dashed border-slate-200 hover:border-slate-800"
-                            >
-                              {(pitch.irPercent * 100).toFixed(0)}%
-                            </span>
-                          )}
+                          <ComboboxCell
+                            value={pitch.irPercent && pitch.irPercent > 0 ? `${Math.round(pitch.irPercent * 100)}%` : ''}
+                            onSave={(val) => handleCellSave(pitch.id, 'irPercent', val)}
+                            options={pitchSpecs.irDropdownOptions}
+                            preExistingOptions={pitchSpecs.preExistingIrs}
+                            specType="ir"
+                            placeholder="Insert incidence"
+                            displayValue={pitch.irPercent && pitch.irPercent > 0 ? `${Math.round(pitch.irPercent * 100)}%` : undefined}
+                            align="center"
+                            widthClass="w-20"
+                          />
                         </td>
 
-                        {/* 6. IR Universe */}
-                        <td className="p-2 col-static font-medium text-slate-750 truncate max-w-[100px]" title={pitch.irUniverse}>
-                          {editingCell?.rowId === pitch.id && editingCell?.field === 'irUniverse' ? (
-                            <input
-                              type="text"
-                              value={tempEditValue}
-                              onChange={(e) => setTempEditValue(e.target.value)}
-                              onBlur={saveInlineEdit}
-                              onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
-                              autoFocus
-                              className="w-20 px-1 border border-[#2b6cb0] rounded-md bg-white text-slate-800 font-sans font-normal"
-                            />
-                          ) : (
-                            <span
-                              onDoubleClick={() => startEditing(pitch.id, 'irUniverse', pitch.irUniverse)}
-                              className="cursor-pointer border-b border-dashed border-slate-200 hover:border-slate-800"
-                            >
-                              {pitch.irUniverse}
-                            </span>
-                          )}
+                        {/* 6. IR Universe (country variables) */}
+                        <td className="p-2 col-static font-medium text-slate-750 max-w-[130px]" title={pitch.irUniverse}>
+                          <ComboboxCell
+                            value={pitch.irUniverse}
+                            onSave={(val) => handleCellSave(pitch.id, 'irUniverse', val)}
+                            options={pitchSpecs.universeDropdownOptions}
+                            preExistingOptions={pitchSpecs.preExistingUniverses}
+                            specType="universe"
+                            placeholder="Insert universe"
+                            displayValue={pitch.irUniverse ? <span className="truncate max-w-[110px] inline-block align-middle">{pitch.irUniverse}</span> : undefined}
+                            align="left"
+                            widthClass="w-40"
+                          />
                         </td>
 
-                        {/* 7. Quotas */}
-                        <td className="p-2 col-static text-slate-600 truncate max-w-[130px]" title={pitch.quotas}>
-                          {editingCell?.rowId === pitch.id && editingCell?.field === 'quotas' ? (
-                            <input
-                              type="text"
-                              value={tempEditValue}
-                              onChange={(e) => setTempEditValue(e.target.value)}
-                              onBlur={saveInlineEdit}
-                              onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
-                              autoFocus
-                              className="w-28 px-1 border border-[#2b6cb0] rounded-md bg-white text-slate-800 font-sans font-normal"
-                            />
-                          ) : (
-                            <span
-                              onDoubleClick={() => startEditing(pitch.id, 'quotas', pitch.quotas)}
-                              className="cursor-pointer border-b border-dashed border-slate-200 hover:border-slate-800"
-                            >
-                              {pitch.quotas || 'No Quotas'}
-                            </span>
-                          )}
+                        {/* 7. Quotas (available quotas & No quotas) */}
+                        <td className="p-2 col-static text-slate-600 max-w-[150px]" title={pitch.quotas}>
+                          <ComboboxCell
+                            value={pitch.quotas || 'No quotas'}
+                            onSave={(val) => handleCellSave(pitch.id, 'quotas', val)}
+                            options={pitchSpecs.quotaDropdownOptions}
+                            preExistingOptions={pitchSpecs.preExistingQuotas}
+                            specType="quota"
+                            placeholder="Insert quotas"
+                            displayValue={pitch.quotas ? <span className="truncate max-w-[130px] inline-block align-middle">{pitch.quotas}</span> : undefined}
+                            align="left"
+                            widthClass="w-44"
+                          />
                         </td>
 
                          {/* --- INTERNALLY 4 COLUMNS --- */}
@@ -1089,42 +1172,68 @@ export default function DatabaseGrid({
                          </td>
 
                          {/* C. Internal Max % (represents direct raw database capacity, can exceed 100%) */}
-                         <td 
-                           className="p-2 text-center bg-[#ebf8ff]/50 font-bold text-slate-900"
-                           title="Max internal panel capability limit % (max potential capacity)"
-                         >
-                           <span>
-                             {pitch.maxInternalPercent !== undefined ? `${pitch.maxInternalPercent}% *` : `${internalMaxPct}%`}
-                           </span>
-                         </td>
+                          <td 
+                            className="p-2 text-center bg-[#ebf8ff]/50 font-bold text-slate-900 cursor-pointer hover:bg-amber-50"
+                            onClick={() => {
+                              if (editingCell?.rowId === pitch.id && editingCell?.field === "maxInternalPercent") return;
+                              startEditing(pitch.id, "maxInternalPercent", pitch.maxInternalPercent !== undefined ? pitch.maxInternalPercent : 100);
+                            }}
+                            onDoubleClick={() => {
+                              startEditing(pitch.id, "maxInternalPercent", pitch.maxInternalPercent !== undefined ? pitch.maxInternalPercent : 100);
+                            }}
+                            title="Click or double click to set maximum internal panel percentage limit (0-100%)."
+                          >
+                            {editingCell?.rowId === pitch.id && editingCell?.field === "maxInternalPercent" ? (
+                              <input
+                                type="text"
+                                value={tempEditValue}
+                                onChange={(e) => setTempEditValue(e.target.value)}
+                                onClick={(e) => e.stopPropagation()}
+                                onBlur={saveInlineEdit}
+                                onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                                autoFocus
+                                className="w-12 text-center border border-[#2b6cb0] rounded bg-white text-slate-900 font-bold"
+                              />
+                            ) : (
+                              <span className="cursor-pointer border-b border-dashed border-slate-300 hover:border-[#2b6cb0]">
+                                {pitch.maxInternalPercent !== undefined ? `${pitch.maxInternalPercent}% *` : `${internalMaxPct}%`}
+                              </span>
+                            )}
+                          </td>
 
-                         {/* D. Internal Used % */}
-                         <td 
-                           className="p-2 text-center bg-[#ebf8ff]/40 border-r border-slate-200 cursor-pointer hover:bg-amber-50" 
-                           onDoubleClick={() => {
-                             const defaultVal = pitch.totalSampleSize > 0 ? Math.round((alloc.allocatedInternal || 0) / pitch.totalSampleSize * 100) : 0;
-                             startEditing(pitch.id, 'internalPctOverride', pitch.internalPctOverride !== undefined ? pitch.internalPctOverride : defaultVal);
-                           }}
-                           title="Double click to set custom % override of target size for the Internal panel. Empty, auto, or reset to clear."
-                         >
-                           {editingCell?.rowId === pitch.id && editingCell?.field === 'internalPctOverride' ? (
-                             <input
-                               type="text"
-                               value={tempEditValue}
-                               onChange={(e) => setTempEditValue(e.target.value)}
-                               onBlur={saveInlineEdit}
-                               onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
-                               autoFocus
-                               className="w-12 text-center border border-[#2b6cb0] rounded bg-white text-slate-900 font-bold"
-                             />
-                           ) : (
-                             <span 
-                               className="cursor-pointer border-b border-dashed border-slate-300 hover:border-[#2b6cb0] font-semibold text-[#205080]"
-                             >
-                               {pitch.internalPctOverride !== undefined ? `${pitch.internalPctOverride}% *` : `${pitch.totalSampleSize > 0 ? Math.round((alloc.allocatedInternal || 0) / pitch.totalSampleSize * 100) : 0}%`}
-                             </span>
-                           )}
-                         </td>
+                          {/* D. Internal Used % */}
+                          <td 
+                            className="p-2 text-center bg-[#ebf8ff]/40 border-r border-slate-200 cursor-pointer hover:bg-amber-50" 
+                            onClick={() => {
+                              if (editingCell?.rowId === pitch.id && editingCell?.field === "internalPctOverride") return;
+                              const defaultVal = pitch.totalSampleSize > 0 ? Math.round((alloc.allocatedInternal || 0) / pitch.totalSampleSize * 100) : 0;
+                              startEditing(pitch.id, "internalPctOverride", pitch.internalPctOverride !== undefined ? pitch.internalPctOverride : defaultVal);
+                            }}
+                            onDoubleClick={() => {
+                              const defaultVal = pitch.totalSampleSize > 0 ? Math.round((alloc.allocatedInternal || 0) / pitch.totalSampleSize * 100) : 0;
+                              startEditing(pitch.id, "internalPctOverride", pitch.internalPctOverride !== undefined ? pitch.internalPctOverride : defaultVal);
+                            }}
+                            title="Click or double click to set custom % override of target size for the Internal panel. Empty, auto, or reset to clear."
+                          >
+                            {editingCell?.rowId === pitch.id && editingCell?.field === "internalPctOverride" ? (
+                              <input
+                                type="text"
+                                value={tempEditValue}
+                                onChange={(e) => setTempEditValue(e.target.value)}
+                                onClick={(e) => e.stopPropagation()}
+                                onBlur={saveInlineEdit}
+                                onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                                autoFocus
+                                className="w-12 text-center border border-[#2b6cb0] rounded bg-white text-slate-900 font-bold"
+                              />
+                            ) : (
+                              <span 
+                                className="cursor-pointer border-b border-dashed border-slate-300 hover:border-[#2b6cb0] font-semibold text-[#205080]"
+                              >
+                                {pitch.internalPctOverride !== undefined ? `${pitch.internalPctOverride}% *` : `${pitch.totalSampleSize > 0 ? Math.round((alloc.allocatedInternal || 0) / pitch.totalSampleSize * 100) : 0}%`}
+                              </span>
+                            )}
+                          </td>
 
                          {/* Visual Separator Column 2 */}
                          <td className="p-0 bg-slate-250 border-r border-slate-350 w-1.5"></td>
@@ -1203,33 +1312,81 @@ export default function DatabaseGrid({
 
                         {/* --- SPENT & FEASIBILITY CALCULATIONS OUTPUT --- */}
                         <td className="p-2">
-                          <span className={`inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                          <InstantTooltip text={
                             alloc.status === 'Fully Feasible' 
-                              ? 'text-emerald-800 bg-emerald-100/85 border-emerald-200' 
-                              : alloc.status === 'Oversample'
-                                ? 'text-purple-800 bg-purple-100/85 border-purple-200'
-                                : alloc.status === 'Partially Feasible' 
-                                  ? 'text-amber-805 bg-amber-100/85 border-amber-200' 
-                                  : 'text-rose-800 bg-rose-100 border-rose-250'
-                          }`}>
-                            {alloc.status === 'Fully Feasible' 
-                              ? 'Secured' 
-                              : alloc.status === 'Oversample'
-                                ? 'Oversample'
-                                : alloc.status === 'Partially Feasible' 
-                                  ? `Deficit (-${alloc.unfilledSample})` 
-                                  : 'Unfilled'}
-                          </span>
+                              ? '100% Demand Feasible' 
+                              : alloc.status === 'Oversample' 
+                                ? 'Allocated sample exceeds target' 
+                                : `Deficit (-${alloc.unfilledSample.toLocaleString()} sample): ${unfeasibleReason}`
+                          }>
+                            <span
+                              className={`inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border cursor-help ${
+                                alloc.status === 'Fully Feasible' 
+                                  ? 'text-emerald-800 bg-emerald-100/85 border-emerald-200' 
+                                  : alloc.status === 'Oversample'
+                                    ? 'text-purple-800 bg-purple-100/85 border-purple-200'
+                                    : alloc.status === 'Partially Feasible' 
+                                      ? 'text-amber-805 bg-amber-100/85 border-amber-200 shadow-2xs' 
+                                      : 'text-rose-800 bg-rose-100 border-rose-250 shadow-2xs'
+                              }`}
+                            >
+                              {alloc.status === 'Fully Feasible' ? (
+                                'Secured'
+                              ) : alloc.status === 'Oversample' ? (
+                                'Oversample'
+                              ) : alloc.status === 'Partially Feasible' ? (
+                                <>
+                                  Deficit (-{alloc.unfilledSample})
+                                  <HelpCircle className="h-2 w-2 opacity-60 ml-0.5" />
+                                </>
+                              ) : (
+                                <>
+                                  Unfilled
+                                  <HelpCircle className="h-2.5 w-2.5 opacity-70 ml-0.5 text-rose-700" />
+                                </>
+                              )}
+                            </span>
+                          </InstantTooltip>
                         </td>
 
-                        <td className={`p-2 text-right font-mono font-bold ${
-                          alloc.status === 'Oversample' ? 'text-purple-700' : 'text-[#2b6cb0]'
-                        }`}>
-                          {alloc.totalAllocated.toLocaleString()}
+                        <td
+                          className={`p-2 text-right font-mono font-bold ${
+                            alloc.status === 'Oversample' ? 'text-purple-700' : 'text-[#2b6cb0]'
+                          } ${alloc.totalAllocated === 0 ? 'cursor-help' : ''}`}
+                        >
+                          {alloc.totalAllocated === 0 ? (
+                            <InstantTooltip text={`0 feasible: ${unfeasibleReason}`}>
+                              <span className="inline-flex items-center gap-1 justify-end text-rose-500 font-bold cursor-help">
+                                0
+                                <HelpCircle className="h-2.5 w-2.5 opacity-60 text-rose-400" />
+                              </span>
+                            </InstantTooltip>
+                          ) : (
+                            alloc.totalAllocated.toLocaleString()
+                          )}
                         </td>
 
-                        <td className={`p-2 text-right font-mono ${alloc.unfilledSample > 0 ? 'text-rose-600 font-bold' : 'text-slate-400'}`}>
-                          {alloc.unfilledSample > 0 ? alloc.unfilledSample.toLocaleString() : '0'}
+                        <td
+                          className={`p-2 text-right font-mono ${alloc.unfilledSample > 0 ? 'text-rose-600 font-bold cursor-help' : 'text-slate-400'}`}
+                        >
+                          {alloc.unfilledSample > 0 ? (
+                            <InstantTooltip text={`Deficit (-${alloc.unfilledSample.toLocaleString()} sample): ${unfeasibleReason}`}>
+                              <span className="inline-flex items-center gap-1 justify-end cursor-help">
+                                {alloc.unfilledSample.toLocaleString()}
+                                <HelpCircle className="h-2.5 w-2.5 opacity-60 text-rose-500" />
+                              </span>
+                            </InstantTooltip>
+                          ) : (
+                            '0'
+                          )}
+                        </td>
+
+                        {/* Missing % */}
+                        <td
+                          className={`p-2 text-right font-mono ${alloc.unfilledSample > 0 ? 'text-rose-600 font-bold' : 'text-slate-400'}`}
+                          title={alloc.unfilledSample > 0 ? `${pitch.totalSampleSize > 0 ? Math.round((alloc.unfilledSample / pitch.totalSampleSize) * 100) : 0}% deficit` : '0% missing'}
+                        >
+                          {pitch.totalSampleSize > 0 ? `${Math.round((alloc.unfilledSample / pitch.totalSampleSize) * 100)}%` : '0%'}
                         </td>
 
                         <td className="p-2 text-right font-mono text-[#205080] font-bold">
@@ -1237,55 +1394,57 @@ export default function DatabaseGrid({
                         </td>
 
                         <td 
-                          className="p-2 text-center font-mono text-slate-755 whitespace-nowrap cursor-pointer hover:bg-amber-50"
-                          onDoubleClick={() => {
-                            const defaultVal = pitch.totalSampleSize > 0 ? Math.round((alloc.allocatedInternal || 0) / pitch.totalSampleSize * 100) : 0;
-                            startEditing(pitch.id, 'internalPctOverride', pitch.internalPctOverride !== undefined ? pitch.internalPctOverride : defaultVal);
-                          }}
-                          title="Double click to set Internal Used % override share"
+                          className="p-2 text-center font-mono text-slate-755 whitespace-nowrap"
+                          title="Calculated Internal panel share % vs external vendors share %"
                         >
-                          {editingCell?.rowId === pitch.id && editingCell?.field === 'internalPctOverride' ? (
-                            <input
-                              type="text"
-                              value={tempEditValue}
-                              onChange={(e) => setTempEditValue(e.target.value)}
-                              onBlur={saveInlineEdit}
-                              onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
-                              autoFocus
-                              className="w-12 text-center border border-[#2b6cb0] rounded bg-white text-slate-900 font-bold"
-                            />
-                          ) : (
-                            <>
-                              <span className="font-semibold text-indigo-755">{alloc.internalSharePct}%</span>
-                              <span className="text-slate-300 mx-1">/</span>
-                              <span className="font-semibold text-emerald-700">{alloc.externalSharePct}%</span>
-                            </>
-                          )}
+                          <span className="font-semibold text-indigo-755">{alloc.internalSharePct}%</span>
+                          <span className="text-slate-300 mx-1">/</span>
+                          <span className="font-semibold text-emerald-700">{alloc.externalSharePct}%</span>
                         </td>
 
                         <td className="p-2 text-center font-mono font-bold text-slate-705">
                           {alloc.numVendorsUsed}
                         </td>
 
-                        <td className="p-2 text-right font-mono">
-                          {pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? (
-                            alloc.weightedCpi > pitch.targetedCpi ? (
-                              <span className="text-red-650 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded font-mono font-bold tracking-tight text-right w-full block">
-                                ${alloc.weightedCpi.toFixed(2)}
+                        <td className="p-2 text-right font-mono" title={alloc.hasLoiMarkup ? alloc.loiMarkupNote : undefined}>
+                          <div className="flex flex-col items-end">
+                            <div className="flex items-center gap-1 justify-end">
+                              {alloc.hasLoiMarkup && (
+                                <span
+                                  className="text-[8px] bg-amber-100 text-amber-900 border border-amber-300 px-1 py-0.2 rounded font-sans font-bold cursor-help"
+                                  title={alloc.loiMarkupNote}
+                                >
+                                  +10% LOI
+                                </span>
+                              )}
+                              {pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? (
+                                alloc.weightedCpi > pitch.targetedCpi ? (
+                                  <span className="text-red-650 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded font-mono font-bold tracking-tight text-right block">
+                                    ${alloc.weightedCpi.toFixed(2)}
+                                  </span>
+                                ) : (
+                                  <span className="text-emerald-700 font-mono font-bold">
+                                    ${alloc.weightedCpi.toFixed(2)}
+                                  </span>
+                                )
+                              ) : (
+                                <span className="text-emerald-800 font-mono font-bold">
+                                  ${alloc.weightedCpi.toFixed(2)}
+                                </span>
+                              )}
+                            </div>
+                            {alloc.hasLoiMarkup && (
+                              <span
+                                className="text-[8px] text-amber-600 italic font-medium cursor-help"
+                                title={alloc.loiMarkupNote}
+                              >
+                                * LOI assumption (+10%)
                               </span>
-                            ) : (
-                              <span className="text-emerald-700 font-mono font-bold">
-                                ${alloc.weightedCpi.toFixed(2)}
-                              </span>
-                            )
-                          ) : (
-                            <span className="text-emerald-800 font-mono font-bold">
-                              ${alloc.weightedCpi.toFixed(2)}
-                            </span>
-                          )}
+                            )}
+                          </div>
                         </td>
 
-                        <td className="p-2 text-right font-mono whitespace-nowrap">
+                        <td className="p-2 text-right font-mono whitespace-nowrap" title={alloc.hasLoiMarkup ? alloc.loiMarkupNote : (pitch.targetedCpi ? `Targeted CPI: $${pitch.targetedCpi.toFixed(2)}` : undefined)}>
                           {editingCell?.rowId === pitch.id && editingCell?.field === 'targetedCpi' ? (
                             <input
                               type="text"
@@ -1368,8 +1527,12 @@ export default function DatabaseGrid({
                         {/* Action Duplicate */}
                         <td className="p-2 text-center bg-slate-50/50">
                           <button
-                            onClick={() => handleDuplicateRow(pitch.id)}
-                            className="p-1.5 bg-[#ebf8ff] hover:bg-[#bee3f8] text-[#2b6cb0] rounded-md border border-[#bee3f8] hover:text-[#205080] transition shadow-sm mx-auto flex items-center justify-center cursor-pointer"
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDuplicateRow(pitch.id);
+                            }}
+                            className="p-1.5 bg-[#ebf8ff] hover:bg-[#bee3f8] text-[#2b6cb0] rounded-md border border-[#bee3f8] hover:text-[#205080] transition shadow-xs mx-auto flex items-center justify-center cursor-pointer"
                             title="Duplicate scenario option"
                           >
                             <Copy className="h-3.5 w-3.5" />
@@ -1379,8 +1542,12 @@ export default function DatabaseGrid({
                         {/* Action Delete */}
                         <td className="p-2 text-center bg-slate-50/50">
                           <button
+                            type="button"
                             id={`del-row-${pitch.id}`}
-                            onClick={() => handleDeleteRow(pitch.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteRow(pitch.id);
+                            }}
                             className="text-slate-400 hover:text-rose-600 p-1.5 rounded hover:bg-rose-50 transition mx-auto flex items-center justify-center cursor-pointer"
                             title="Delete scenario option"
                           >
@@ -1401,365 +1568,12 @@ export default function DatabaseGrid({
         <div className="p-3.5 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500 bg-slate-50/30">
           <div className="flex items-center gap-1">
             <CheckCircle className="h-3 w-3 text-emerald-600" />
-            <span>Double click cells to edit. Manually set vendor % sliders to instantly scale capacities and save scenarios!</span>
+            <span>Click or double click cells to edit. Manually set vendor % sliders to instantly scale capacities and save scenarios!</span>
           </div>
           <div>
             <span className="font-semibold">{filteredPitches.length} showing</span> / {pitches.length} options overall
           </div>
         </div>
-      )}
-
-      {/* Dynamic Feasibility Costs output table inside Manage Scenarios tab! - REMOVED per user request */}
-      {false && (
-      <div className="mt-6 border-t border-slate-200 pt-6 space-y-4" id="scenarios-calculations-output-box">
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden" id="fe-scenarios-results-grid-box">
-          <div className="p-3 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-slate-50/50">
-            <div>
-              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wide flex items-center gap-1.5">
-                <TrendingDown className="h-4.5 w-4.5 text-[#2b6cb0]" />
-                Feasibility &amp; Spend Calculations (Live Preview)
-              </h3>
-              <p className="text-[11px] text-slate-500">Live feasibility outputs computed instantly over active scenario specs.</p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-1.5">
-              {/* Start Checking Dropdown inside scenario specifications wrapper */}
-              <div className="relative inline-block text-left" id="start-checking-actions-grid">
-                <button
-                  type="button"
-                  onClick={() => setIsCheckDropdownOpen(!isCheckDropdownOpen)}
-                  disabled={isChecking || pitches.length === 0}
-                  className={`flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold rounded-lg transition shadow-sm cursor-pointer border ${
-                    isChecking || pitches.length === 0
-                      ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
-                      : 'bg-indigo-650 hover:bg-indigo-700 text-white border-indigo-700 bg-indigo-600'
-                  }`}
-                  id="check-feasibility-dropdown-btn-grid"
-                  title="Select feasibility evaluation style from the database"
-                >
-                  <CheckCircle2 className="h-3 w-3 mr-1 mb-0.5" />
-                  {isChecking ? 'Checking...' : 'Check Feasibility'}
-                  <ChevronDown className="h-3 w-3 ml-1 mb-0.5" />
-                </button>
-
-                {isCheckDropdownOpen && (
-                  <>
-                    <div 
-                      className="fixed inset-0 z-40" 
-                      onClick={() => setIsCheckDropdownOpen(false)} 
-                    />
-                    <div className="absolute right-0 mt-1.5 w-64 rounded-lg bg-white border border-slate-200 shadow-xl z-50 overflow-hidden py-1 text-left" id="check-feasibility-dropdown-menu-grid">
-                      {/* 1. Feasibility for Targets */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onStartChecking?.();
-                          setIsCheckDropdownOpen(false);
-                        }}
-                        className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 text-slate-800 font-medium flex items-center gap-2.5 border-b border-slate-100 cursor-pointer"
-                      >
-                        <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
-                        <div>
-                          <div className="font-bold text-slate-900">Feasibility for Targets</div>
-                          <div className="text-[10px] text-slate-400">Depletes capacities &amp; extends externally</div>
-                        </div>
-                      </button>
-
-                      {/* 2. Feasibility for options */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onStartCheckingForOptions?.();
-                          setIsCheckDropdownOpen(false);
-                        }}
-                        className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 text-slate-800 font-medium flex items-center gap-2.5 border-b border-slate-100 cursor-pointer"
-                      >
-                        <Layers className="h-4 w-4 text-sky-600 shrink-0" />
-                        <div>
-                          <div className="font-bold text-slate-900">Feasibility for options</div>
-                          <div className="text-[10px] text-slate-400">Re-uses database row capacities fully</div>
-                        </div>
-                      </button>
-
-                      {/* 3. Feasibility Optimized */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onStartCheckingOptimized?.();
-                          setIsCheckDropdownOpen(false);
-                        }}
-                        className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 text-slate-800 font-medium flex items-center gap-2.5 cursor-pointer"
-                      >
-                        <Sliders className="h-4 w-4 text-indigo-600 shrink-0" />
-                        <div>
-                          <div className="font-bold text-slate-900">Feasibility Optimized</div>
-                          <div className="text-[10px] text-slate-400">Optimizes panel blends, CPIs &amp; budget</div>
-                        </div>
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {!hasChecked && pitches.length > 0 && (
-            <div className="bg-amber-50 border-b border-amber-200 p-3 text-xs text-amber-900 flex items-center justify-between gap-4">
-              <div className="flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 text-amber-650 shrink-0" />
-                <span>
-                  <strong>Specs Updated</strong>: Your scenario specification changes require checking. Click <strong>Check Feasibility</strong> to refresh feasibility metrics.
-                </span>
-              </div>
-              <button
-                onClick={onStartChecking}
-                disabled={isChecking}
-                className="px-2.5 py-1 text-[11px] font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition pointer-events-auto shrink-0 shadow cursor-pointer"
-              >
-                Check Feasibility
-              </button>
-            </div>
-          )}
-
-          <div className="overflow-x-auto text-[11px]">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-slate-50 text-slate-600 border-b border-slate-100 font-semibold uppercase tracking-wider text-[10px]">
-                  <th className="p-2">Option</th>
-                  <th className="p-2 text-center bg-slate-100/40 min-w-[170px]">Specifications Overview</th>
-                  <th className="p-2">Feasibility Status</th>
-                  <th className="p-2 text-right">Target</th>
-                  <th className="p-2 text-right text-[#2b6cb0]">feasible</th>
-                  <th className="p-2 text-right text-rose-700">missing</th>
-                  <th className="p-2 text-right text-[#205080]" title="Specs Potential max feasible">max feasible</th>
-                  <th className="p-2 text-center text-slate-800">Internal/Ext Share</th>
-                  <th className="p-2 text-center text-slate-700 font-bold" title="Number of external vendors utilized">Nr of vendors</th>
-                  <th className="p-2 text-right text-emerald-850 font-bold">Weighted CPI</th>
-                  <th className="p-2 text-right text-indigo-950 font-bold">Targeted CPI</th>
-                  <th className="p-2 text-right text-slate-800">PM Fee</th>
-                  <th className="p-2 text-center">Comparability</th>
-                  <th className="p-2 text-right text-slate-900 font-bold">Total external costs (no markup)</th>
-                  <th className="p-2 text-right text-emerald-800 font-bold">OP %</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pitches.length === 0 ? (
-                  <tr>
-                    <td colSpan={14} className="p-8 text-center text-slate-400 font-sans italic">
-                      No scenario specifications loaded.
-                    </td>
-                  </tr>
-                ) : (
-                  pitches.map((pitch) => {
-                    const alloc = allocations.find((a) => a.rowId === pitch.id) || {
-                      status: 'Unfeasible',
-                      allocatedInternal: 0,
-                      allocatedVendor1: 0,
-                      allocatedVendor2: 0,
-                      allocatedVendor3: 0,
-                      allocatedVendor4: 0,
-                      totalAllocated: 0,
-                      unfilledSample: pitch.totalSampleSize,
-                      maxPotential: 0,
-                      overlapPenaltyPct: 0,
-                      internalSharePct: 0,
-                      externalSharePct: 0,
-                      activeVendorsCsv: 'None',
-                      weightedCpi: 0,
-                      numVendorsUsed: 0,
-                      pmFee: 150,
-                      comparability: 'High',
-                      totalCost: 0,
-                      operationalProfit: 0,
-                      externalCost: 0,
-                      internalCostRef: 0
-                    } as any;
-
-                    const rowSalesCpi = pitch.salesCpi !== undefined ? pitch.salesCpi : 7.50;
-                    const rowRevenue = alloc.totalAllocated * rowSalesCpi;
-                    const rowOpCosts = (alloc.externalCost || 0) + (alloc.internalCostRef || 0);
-                    const rowOpPct = rowRevenue > 0 ? ((rowRevenue - rowOpCosts) / rowRevenue) * 100 : 0;
-
-                    let potentialPanels = 0;
-                    if (Number(pitch.internal || 0) > 0) potentialPanels++;
-                    const numVendorsForMax = vendors ? vendors.length : 4;
-                    for (let idx = 0; idx < numVendorsForMax; idx++) {
-                      if ((Number((pitch as any)[`vendor${idx + 1}`]) || 0) > 0) {
-                        potentialPanels++;
-                      }
-                    }
-
-                    let potentialPenaltyPct = 0;
-                    if (pitch.overlapVariable !== undefined) {
-                      potentialPenaltyPct = pitch.overlapVariable;
-                    } else {
-                      if (potentialPanels <= 1) potentialPenaltyPct = 0;
-                      else if (potentialPanels === 2) potentialPenaltyPct = 20;
-                      else if (potentialPanels === 3) potentialPenaltyPct = 25;
-                      else if (potentialPanels === 4) potentialPenaltyPct = 30;
-                      else if (potentialPanels === 5) potentialPenaltyPct = 35;
-                      else if (potentialPanels === 6) potentialPenaltyPct = 40;
-                      else potentialPenaltyPct = 50;
-                    }
-
-                    const potentialPenaltyMultiplier = 1 - potentialPenaltyPct / 100;
-                    const maxPotentialExternal = Array.from({ length: numVendorsForMax }).reduce((acc: number, _, idx) => acc + (Number((pitch as any)[`vendor${idx + 1}`]) || 0), 0) as number;
-                    const displayMaxPotential = Math.round((Number(pitch.internal || 0) + maxPotentialExternal) * potentialPenaltyMultiplier);
-
-                    return (
-                      <tr key={pitch.id} className="hover:bg-slate-50 border-b border-slate-50 text-[11px]">
-                        <td className="p-2 font-medium text-slate-900">
-                          <span className="font-bold block text-slate-850">{pitch.market}</span>
-                        </td>
-                        
-                         {/* Specifications Overview Column INSIDE output table inside scenarios tab as well */}
-                        <td className="p-2 bg-slate-50/40 text-center">
-                          <div className="flex flex-col gap-0.5 text-[10px] items-center justify-center">
-                            <div className="flex items-center gap-1.5 font-sans justify-center">
-                              <span className="font-bold text-[#205080]" title="Length of interview">LOI:</span>
-                              <span className="text-slate-750 font-mono font-medium">{pitch.loi}m</span>
-                              <span className="text-slate-300">|</span>
-                              <span className="font-bold text-emerald-800" title="Incidence rate percentage">IR%:</span>
-                              <span className="text-emerald-950 font-mono font-bold">{(pitch.irPercent * 100).toFixed(0)}%</span>
-                              <span className="text-slate-300">|</span>
-                              <span className="font-bold text-[#205080]" title="IR universe">Univ:</span>
-                              <span className="text-slate-750 font-mono font-medium truncate max-w-[85px] inline-block align-bottom" title={pitch.irUniverse}>{pitch.irUniverse}</span>
-                            </div>
-                            <div className="text-[9px] text-slate-500 font-medium truncate flex gap-1 justify-center">
-                              <span className="text-slate-400 font-bold">Quotas:</span> <span className="text-slate-600 truncate max-w-[130px]" title={pitch.quotas}>{pitch.quotas}</span>
-                            </div>
-                          </div>
-                        </td>
-
-                        <td className="p-2">
-                          <span className={`inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border ${
-                            alloc.status === 'Fully Feasible' 
-                              ? 'text-emerald-800 bg-emerald-100/80 border-emerald-200' 
-                              : alloc.status === 'Oversample'
-                                ? 'text-purple-800 bg-purple-100/80 border-purple-200'
-                                : alloc.status === 'Partially Feasible' 
-                                  ? 'text-amber-805 bg-amber-100/85 border-amber-200' 
-                                  : 'text-rose-800 bg-rose-105 border-rose-250'
-                          }`}>
-                            {alloc.status === 'Fully Feasible' 
-                              ? 'Secured' 
-                              : alloc.status === 'Oversample'
-                                ? 'Oversample'
-                                : alloc.status === 'Partially Feasible' 
-                                  ? `Deficit (-${alloc.unfilledSample})` 
-                                  : 'Unfilled'}
-                          </span>
-                        </td>
-
-                        <td className="p-2 text-right font-mono text-slate-700">
-                          {pitch.totalSampleSize.toLocaleString()}
-                        </td>
-
-                        <td className={`p-2 text-right font-mono font-bold ${
-                          alloc.status === 'Oversample' ? 'text-purple-700' : 'text-[#2b6cb0]'
-                        }`}>
-                          {alloc.totalAllocated.toLocaleString()}
-                        </td>
-
-                        <td className={`p-2 text-right font-mono ${alloc.unfilledSample > 0 ? 'text-rose-600 font-bold' : 'text-slate-400'}`}>
-                          {alloc.unfilledSample > 0 ? alloc.unfilledSample.toLocaleString() : '0'}
-                        </td>
-
-                        <td className="p-2 text-right font-mono text-indigo-900 font-bold">
-                          {displayMaxPotential.toLocaleString()}
-                        </td>
-
-                        <td 
-                          className="p-2 text-center font-mono text-slate-750 cursor-pointer hover:bg-amber-50"
-                          onDoubleClick={() => {
-                            const defaultVal = pitch.totalSampleSize > 0 ? Math.round((alloc.allocatedInternal || 0) / pitch.totalSampleSize * 100) : 0;
-                            startEditing(pitch.id, 'internalPctOverride', pitch.internalPctOverride !== undefined ? pitch.internalPctOverride : defaultVal);
-                          }}
-                          title="Double click to set Internal Used % override share"
-                        >
-                          {editingCell?.rowId === pitch.id && editingCell?.field === 'internalPctOverride' ? (
-                            <input
-                              type="text"
-                              value={tempEditValue}
-                              onChange={(e) => setTempEditValue(e.target.value)}
-                              onBlur={saveInlineEdit}
-                              onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
-                              autoFocus
-                              className="w-12 text-center border border-[#2b6cb0] rounded bg-white text-slate-900 font-bold"
-                            />
-                          ) : (
-                            <>
-                              <span className="font-semibold text-indigo-750">{alloc.internalSharePct}%</span>
-                              <span className="text-slate-355 mx-0.5">/</span>
-                              <span className="font-semibold text-emerald-700">{alloc.externalSharePct}%</span>
-                            </>
-                          )}
-                        </td>
-
-                        <td className="p-2 text-center font-mono font-bold text-slate-705">
-                          {alloc.numVendorsUsed}
-                        </td>
-
-                        <td className={`p-2 text-right font-mono font-bold ${
-                          pitch.targetedCpi !== undefined && pitch.targetedCpi > 0
-                            ? (alloc.weightedCpi > pitch.targetedCpi ? 'text-rose-655 font-bold' : 'text-emerald-655 font-bold')
-                            : 'text-emerald-800'
-                        }`}>
-                          ${alloc.weightedCpi.toFixed(2)}
-                        </td>
-
-                        <td className="p-2 text-right font-mono whitespace-nowrap">
-                          {editingCell?.rowId === pitch.id && editingCell?.field === 'targetedCpi' ? (
-                            <input
-                              type="text"
-                              value={tempEditValue}
-                              onChange={(e) => setTempEditValue(e.target.value)}
-                              onBlur={saveInlineEdit}
-                              onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
-                              autoFocus
-                              className="w-16 px-1 text-right border border-[#2b6cb0] rounded bg-white text-slate-900 font-bold"
-                            />
-                          ) : (
-                            <span 
-                              onDoubleClick={() => startEditing(pitch.id, 'targetedCpi', pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? pitch.targetedCpi : '')}
-                              className="cursor-pointer border-b border-dashed border-slate-300 hover:border-[#2b6cb0] font-semibold text-slate-705"
-                              title="Double click to edit Targeted CPI"
-                            >
-                              {pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? `$${pitch.targetedCpi.toFixed(2)}` : '-'}
-                            </span>
-                          )}
-                        </td>
-
-                        <td className="p-2 text-right font-mono text-slate-800">
-                          ${pitch.pmFee !== undefined ? pitch.pmFee : 150}
-                        </td>
-
-                        <td className="p-2 text-center">
-                          <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
-                            (pitch.comparability || 'High') === 'High' ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-amber-50 text-amber-800'
-                          }`}>
-                            {pitch.comparability || 'High'}
-                          </span>
-                        </td>
-
-                        <td className="p-2 text-right font-mono text-slate-900 font-bold">
-                          ${alloc.externalCost.toLocaleString()}
-                        </td>
-
-                        <td className="p-2 text-right font-mono font-bold">
-                          <span className={`px-2 py-0.5 rounded ${rowOpPct >= 0 ? 'bg-emerald-50 text-emerald-850' : 'bg-rose-50 text-rose-850'}`}>
-                            {rowOpPct.toFixed(1)}%
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
       )}
       <datalist id="country-datalist">
         {ALL_COUNTRIES.map((cty) => (

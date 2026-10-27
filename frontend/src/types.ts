@@ -1,7 +1,8 @@
 export interface VendorTier {
   name: string;
   tier: string;
-  color: 'green' | 'yellow' | 'orange';
+  color: 'Green' | 'Grey' | 'Red' | 'green' | 'yellow' | 'orange' | 'grey' | 'red' | string;
+  countries?: string[];
   isAddedManually?: boolean;
 }
 
@@ -72,6 +73,11 @@ export interface FeasibilityRow {
   overlapVariable?: number; // Manually assigned overlap percentage (0, 20, 25, 30, 35, 40, 50)
   isLocked?: boolean;
   lockedAllocation?: AllocationResult;
+  hasLoiMarkup?: boolean;
+  loiDiff?: number;
+  matchedDbLoi?: number;
+  irReductionPct?: number;
+  _matchMetadata?: any;
 }
 
 export interface AllocationResult {
@@ -95,6 +101,9 @@ export interface AllocationResult {
   internalCostRef: number; // Internal cost reference ($2/res)
   totalCost: number; // Total overall cost
   weightedCpi: number; // Real weighted average CPI of utilized vendors
+  hasLoiMarkup?: boolean; // Whether +10% LOI markup assumption was applied
+  loiMarkupNote?: string; // Informative note for hover
+  irReductionPct?: number; // IR reduction percentage applied
   
   // Overlap
   overlapPenaltyPct: number; // Overlap penalty percentage applied (0-50%)
@@ -121,4 +130,5 @@ export interface ChatMessage {
   role: 'user' | 'model';
   text: string;
   timestamp: string;
+  queryPitch?: FeasibilityRow;
 }

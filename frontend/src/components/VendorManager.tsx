@@ -14,7 +14,7 @@ export default function VendorManager({
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
   const [editTier, setEditTier] = useState('');
-  const [editColor, setEditColor] = useState<'green' | 'yellow' | 'orange'>('green');
+  const [editColor, setEditColor] = useState<VendorTier['color']>('green');
 
   const handleStartEditing = (idx: number, vendor: VendorTier) => {
     setEditingIndex(idx);
@@ -36,19 +36,23 @@ export default function VendorManager({
 
   // Maps tier text to badge colors
   const getTierColor = (tier: string) => {
-    const t = tier.toLowerCase();
-    if (t.includes('0') || t.includes('prime')) return 'bg-[#ebf8ff] text-[#2b6cb0] border-[#bee3f8]';
-    if (t.includes('1') || t.includes('high')) return 'bg-sky-50 text-sky-800 border-sky-250';
-    if (t.includes('2')) return 'bg-indigo-50 text-indigo-805 border-indigo-200';
-    return 'bg-slate-50 text-slate-705 border-slate-200';
+    const t = String(tier || '').toLowerCase();
+    if (t.includes('do not use')) return 'bg-rose-100 text-rose-800 border-rose-300 font-bold';
+    if (t.includes('0') || t.includes('prime')) return 'bg-[#ebf8ff] text-[#2b6cb0] border-[#bee3f8] font-bold';
+    if (t.includes('1') || t.includes('high')) return 'bg-sky-50 text-sky-800 border-sky-250 font-bold';
+    if (t.includes('2')) return 'bg-indigo-50 text-indigo-805 border-indigo-200 font-bold';
+    if (t.includes('3')) return 'bg-purple-50 text-purple-800 border-purple-200 font-medium';
+    return 'bg-slate-100 text-slate-600 border-slate-200 font-normal';
   };
 
   const getColorBadgeStyle = (color: string) => {
-    const c = String(color || 'green').toLowerCase();
+    const c = String(color || 'grey').toLowerCase();
     if (c === 'green') return 'bg-emerald-50 text-emerald-800 border-emerald-250';
+    if (c === 'red') return 'bg-rose-50 text-rose-800 border-rose-250 font-bold';
+    if (c === 'grey' || c === 'gray') return 'bg-slate-100 text-slate-700 border-slate-300';
     if (c === 'yellow') return 'bg-amber-50 text-amber-900 border-amber-250';
     if (c === 'orange') return 'bg-orange-50 text-orange-900 border-orange-250';
-    return 'bg-slate-50 text-slate-805 border-slate-200';
+    return 'bg-slate-100 text-slate-700 border-slate-300';
   };
 
   return (
@@ -92,10 +96,12 @@ export default function VendorManager({
                         onChange={(e) => setEditTier(e.target.value)}
                         className="px-2 py-1 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium text-slate-800"
                       >
-                        <option value="tier 1">tier 1</option>
-                        <option value="tier 2">tier 2</option>
-                        <option value="tier 3">tier 3</option>
-                        <option value="no tier">no tier</option>
+                        <option value="Tier 0">Tier 0 (Prime)</option>
+                        <option value="Tier 1">Tier 1</option>
+                        <option value="Tier 2">Tier 2</option>
+                        <option value="Tier 3">Tier 3</option>
+                        <option value="No Tier">No Tier</option>
+                        <option value="Do not use">Do not use (Banned)</option>
                       </select>
                     ) : (
                       <span className={`inline-flex items-center gap-1 border px-2 py-0.5 font-medium font-mono text-[9px] rounded-full uppercase tracking-wider ${getTierColor(vendor.tier)}`}>
@@ -113,14 +119,14 @@ export default function VendorManager({
                         onChange={(e) => setEditColor(e.target.value as any)}
                         className="px-2 py-1 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium text-slate-800"
                       >
-                        <option value="green">Green (High)</option>
-                        <option value="yellow">Yellow (Medium)</option>
-                        <option value="orange">Orange (Low)</option>
+                        <option value="Green">Green (High Priority)</option>
+                        <option value="Grey">Grey (Neutral / Standard)</option>
+                        <option value="Red">Red (Do Not Use)</option>
                       </select>
                     ) : (
                       <span className={`inline-flex items-center gap-1 border px-2 py-0.5 font-medium font-mono text-[9px] rounded-full uppercase tracking-wider ${getColorBadgeStyle(vendor.color)}`}>
-                        <span className={`h-1.5 w-1.5 rounded-full ${vendor.color === 'green' ? 'bg-emerald-500' : vendor.color === 'yellow' ? 'bg-amber-500' : 'bg-orange-500'}`} />
-                        {vendor.color || 'green'}
+                        <span className={`h-1.5 w-1.5 rounded-full ${String(vendor.color).toLowerCase() === 'green' ? 'bg-emerald-500' : String(vendor.color).toLowerCase() === 'red' ? 'bg-rose-500' : 'bg-slate-400'}`} />
+                        {vendor.color || 'Grey'}
                       </span>
                     )}
                   </td>
@@ -130,6 +136,7 @@ export default function VendorManager({
                     {isEditing ? (
                       <div className="flex justify-center gap-1.5">
                         <button
+                          type="button"
                           onClick={() => handleSaveEdit(idx)}
                           className="px-2 py-1 bg-emerald-600 font-bold hover:bg-emerald-700 text-white rounded text-[10px] transition cursor-pointer shadow-xs inline-flex items-center gap-1"
                         >
@@ -137,6 +144,7 @@ export default function VendorManager({
                           Save
                         </button>
                         <button
+                          type="button"
                           onClick={() => setEditingIndex(null)}
                           className="px-2 py-1 bg-slate-200 font-bold hover:bg-slate-300 text-slate-700 rounded text-[10px] transition cursor-pointer"
                         >
@@ -145,6 +153,7 @@ export default function VendorManager({
                       </div>
                     ) : (
                       <button
+                        type="button"
                         onClick={() => handleStartEditing(idx, vendor)}
                         className="p-1 px-2.5 bg-slate-100 border border-slate-200 text-slate-600 hover:text-[#2b6cb0] hover:bg-sky-50 rounded transition inline-flex items-center gap-1 font-semibold text-[10px] cursor-pointer"
                         title="Edit vendor properties"

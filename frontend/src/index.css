@@ -60,3 +60,17 @@ body {
   font-weight: 600;
 }
 
+/* Dynamic Feasibility Grid font scaling */
+.dynamic-feasibility-grid,
+.dynamic-feasibility-grid th,
+.dynamic-feasibility-grid td,
+.dynamic-feasibility-grid input,
+.dynamic-feasibility-grid select,
+.dynamic-feasibility-grid .font-scalable {
+  font-size: var(--grid-font-size, 12px) !important;
+}
+
+.dynamic-feasibility-grid .badge-scalable {
+  font-size: calc(var(--grid-font-size, 12px) * 0.8) !important;
+}
+

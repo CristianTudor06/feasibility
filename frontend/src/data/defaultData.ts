@@ -1,11 +1,7 @@
 import { FeasibilityRow, VendorTier } from '../types';
+import { ATTACHED_VENDOR_TIERS } from './vendorTiersData';
 
-export const DEFAULT_VENDORS: VendorTier[] = [
-  { name: 'Vendor 1', tier: 'tier 1', color: 'green' },
-  { name: 'Vendor 2', tier: 'tier 2', color: 'yellow' },
-  { name: 'Vendor 3', tier: 'tier 3', color: 'orange' },
-  { name: 'Vendor 4', tier: 'no tier', color: 'yellow' }
-];
+export const DEFAULT_VENDORS: VendorTier[] = ATTACHED_VENDOR_TIERS;
 
 export const DEFAULT_PITCHES: FeasibilityRow[] = [
   {
@@ -290,48 +286,4 @@ export const DEFAULT_PITCHES: FeasibilityRow[] = [
   }
 ];
 
-export const VENDOR_DATABASE_POOL: { name: string; tier: string; color: 'green' | 'yellow' | 'orange'; countries: string[] }[] = [
-  { name: 'Vendor 1', tier: 'tier 1', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 2', tier: 'tier 2', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 3', tier: 'tier 3', color: 'orange', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 4', tier: 'no tier', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 5', tier: 'tier 1', color: 'orange', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 6', tier: 'tier 2', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 7', tier: 'tier 3', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 8', tier: 'no tier', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 9', tier: 'tier 1', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 10', tier: 'tier 2', color: 'orange', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 11', tier: 'tier 3', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 12', tier: 'no tier', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 13', tier: 'tier 1', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 14', tier: 'tier 2', color: 'orange', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 15', tier: 'tier 3', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 16', tier: 'no tier', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 17', tier: 'tier 1', color: 'orange', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 18', tier: 'tier 1', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 19', tier: 'tier 1', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 20', tier: 'tier 1', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 21', tier: 'tier 1', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 22', tier: 'tier 1', color: 'orange', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 23', tier: 'tier 1', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 24', tier: 'tier 1', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 25', tier: 'tier 1', color: 'orange', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 26', tier: 'tier 2', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 27', tier: 'tier 2', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 28', tier: 'tier 2', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 29', tier: 'tier 2', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 30', tier: 'tier 2', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 31', tier: 'tier 2', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 32', tier: 'tier 2', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 33', tier: 'tier 2', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 34', tier: 'tier 2', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 35', tier: 'tier 2', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 36', tier: 'tier 3', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 37', tier: 'tier 3', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 38', tier: 'tier 3', color: 'yellow', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 39', tier: 'tier 3', color: 'orange', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 40', tier: 'tier 3', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 41', tier: 'tier 3', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 42', tier: 'tier 3', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] },
-  { name: 'Vendor 43', tier: 'tier 3', color: 'green', countries: ['France', 'Germany', 'United States', 'Spain', 'Italy', 'Bulgaria', 'Austria', 'Romania', 'Serbia'] }
-];
+export const VENDOR_DATABASE_POOL = ATTACHED_VENDOR_TIERS;

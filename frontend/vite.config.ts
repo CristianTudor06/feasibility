@@ -15,7 +15,7 @@ export default defineConfig({
   build: {
     outDir: path.resolve(__dirname, '../feasibility/static'),
     emptyOutDir: true,
-    chunkSizeWarningLimit: 2000,
+    chunkSizeWarningLimit: 3000,
   },
   server: {
     // `npm run dev` serves the UI with hot reload and forwards API calls to Flask.

@@ -10,6 +10,38 @@ import random
 import re
 import time
 
+LOI_RULE_TEXT = """### 📏 LOI (Duration) Calculation Rule
+
+* **LOI lower by up to 10 minutes vs database**:
+  * We continue to quote using database records with the same prices and capacities (no penalty or markup).
+  * *Example*: If the database has 15 min and we request 10 min (5 min difference <= 10 min), it quotes at standard database rates.
+
+* **LOI higher by up to 5 minutes vs database**:
+  * We reuse the database record to ensure feasibility coverage.
+  * **A safety mark-up of +10% is automatically applied to Weighted CPI**.
+  * On hover over the Weighted CPI cell, a dedicated note is displayed: *"LOI Assumption: Requested LOI is higher by up to 5m vs database. Applied +10% safety mark-up on Weighted CPI."*
+
+* **Larger differences**:
+  * A requested LOI higher by more than 5 minutes or lower by more than 10 minutes is considered unfeasible (0 output)."""
+
+IR_RULE_TEXT = """### 🎯 Incidence (IR%) Calculation Rule
+
+* **Incidence lower by up to -10% vs database**:
+  * Generated feasibility (available panel completes capacity) **is directly reduced by this percentage** to reflect recruitment difficulty.
+  * *Example*: If the database has 30% IR and we request 23% IR (-7% difference), panel and vendor capacities are automatically reduced by 7%.
+
+* **Incidence higher vs database**:
+  * The **closest feasibility from the database** is used for that universe, **without applying reduction factors** (factor = 1.0), as higher incidence is practically easier to fulfill.
+
+* **Differences over 10% lower**:
+  * If the requested incidence is lower by more than 10% vs the database, it is marked as unfeasible (0 output)."""
+
+QUOTAS_RULE_TEXT = """### 📋 Quotas Rule
+
+* **"No quotas" option**:
+  * Selecting **"no quotas"** (or *None*) matches and accepts **any feasibility record in the database for that universe (with or without specific quotas such as AGR, Age & Gender, etc.)**.
+  * Even if the database only contains quota-specific entries, a "No quotas" request will utilize those capacities and standard prices."""
+
 COUNTRY_KEYWORDS = [
     "germany", "france", "spain", "italy", "romania", "canada", "australia",
     "japan", "uk", "united kingdom", "us", "usa", "united states",
@@ -85,8 +117,24 @@ def process_rule_based_query(messages, data_state, active_strategy):
     update_strategy = None
     has_modifications = False
 
+    # LOI & IR RULES EXPLANATION
+    if (
+        any(k in query for k in ("rule loi", "loi rule", "regula loi"))
+        or ("loi" in query and any(k in query for k in (
+            "rule", "regula", "higher", "lower", "5 min", "10 min", "assumption", "markup",
+        )))
+    ):
+        text = LOI_RULE_TEXT
+    elif (
+        any(k in query for k in ("rule incidence", "ir rule", "regula incidenta"))
+        or ("incident" in query and any(k in query for k in ("minus", "lower", "higher", "decrease", "10%")))
+    ):
+        text = IR_RULE_TEXT
+    elif any(k in query for k in ("quota", "no quotas", "cote", "fara cote")):
+        text = QUOTAS_RULE_TEXT
+
     # 1. CHEAPEST / OPTIMIZE
-    if any(k in query for k in ("cheapest", "optimize", "lowest cost", "cheapest version")):
+    elif any(k in query for k in ("cheapest", "optimize", "lowest cost", "cheapest version", "cel mai ieftin")):
         update_strategy = "cost"
 
         for pitch in pitches_map.values():

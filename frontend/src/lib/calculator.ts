@@ -1,4 +1,6 @@
 import { FeasibilityRow, AllocationResult, StrategyType, VendorTier } from '../types';
+import { isValidCountry } from '../data/countries';
+import { cleanSpecString, isNoQuotas } from './matching';
 
 export function calculateRowAllocation(
   row: FeasibilityRow,
@@ -11,6 +13,40 @@ export function calculateRowAllocation(
   }
   const target = row.totalSampleSize;
   const numVendors = vendors ? vendors.length : 4;
+
+  // Gibberish or non-existent country yields 0 output
+  if (!isValidCountry(row.market)) {
+    const emptyResult: any = {
+      rowId: row.id,
+      allocatedInternal: 0,
+      allocatedVendor1: 0,
+      allocatedVendor2: 0,
+      allocatedVendor3: 0,
+      allocatedVendor4: 0,
+      totalAllocated: 0,
+      unfilledSample: target,
+      externalCost: 0,
+      internalCostRef: 0,
+      totalCost: 0,
+      weightedCpi: 0,
+      overlapPenaltyPct: 0,
+      numPanelsUsed: 0,
+      numVendorsUsed: 0,
+      maxPotential: 0,
+      internalSharePct: 0,
+      externalSharePct: 0,
+      activeVendorsCsv: 'None (Invalid Country)',
+      operationalProfit: 0,
+      salesCpi: row.salesCpi !== undefined ? row.salesCpi : 7.50,
+      pmFee: row.pmFee !== undefined ? row.pmFee : 150,
+      comparability: 'Low',
+      status: 'Unfeasible'
+    };
+    for (let i = 4; i < numVendors; i++) {
+      emptyResult[`allocatedVendor${i + 1}`] = 0;
+    }
+    return emptyResult as AllocationResult;
+  }
 
   // Custom manual percentage configurations (default to 100%)
   const vendorPcts = Array.from({ length: numVendors }, (_, i) => {
@@ -48,19 +84,22 @@ export function calculateRowAllocation(
 
   const pTier = (tierStr: string): number => {
     const t = String(tierStr || '').toLowerCase();
-    if (t.includes('0')) return 0; // prime/special level 0
+    if (t.includes('do not use')) return 999;
+    if (t.includes('0') || t.includes('prime')) return 0; // Tier 0
     if (t.includes('1')) return 1;
     if (t.includes('2')) return 2;
     if (t.includes('3')) return 3;
-    return 4; // 'no tier' is mapped lowest (4) so it falls below Tier 3 (3)
+    return 4; // 'No Tier' is priority 4
   };
 
   const pColor = (colorStr: string): number => {
     const c = String(colorStr || '').toLowerCase();
+    if (c.includes('red')) return 999;
     if (c.includes('green')) return 1;
     if (c.includes('yellow')) return 2;
     if (c.includes('orange')) return 3;
-    return 4; // unknown / unassigned color gets lowest priority
+    if (c.includes('grey') || c.includes('gray')) return 4;
+    return 5;
   };
 
   // Loop to find the stable overlap penalty since the penalty reduces capacity
@@ -115,6 +154,12 @@ export function calculateRowAllocation(
         if (row[overrideKey] === undefined) {
           const slot = getSlotConfig(i);
           if (slot.isAddedManually) {
+            continue;
+          }
+          // Strictly exclude "Do not use" and Red vendors from automated allocation
+          const tierLower = String(slot.tier || '').toLowerCase();
+          const colorLower = String(slot.color || '').toLowerCase();
+          if (tierLower.includes('do not use') || colorLower === 'red') {
             continue;
           }
           const effectiveCap = Math.round(baseVendorCaps[i] * penaltyMultiplier);
@@ -243,7 +288,7 @@ export function calculateRowAllocation(
   const unfilledSample = target - totalAllocated;
 
   // External cost of vendors
-  const externalCost = allocatedVendors.reduce((acc, val, i) => {
+  let externalCost = allocatedVendors.reduce((acc, val, i) => {
     const vIdx = i + 1;
     const cpiKey = `vendor${vIdx}Cpi` as keyof FeasibilityRow;
     const cpi = (row[cpiKey] as number) || 0;
@@ -260,11 +305,24 @@ export function calculateRowAllocation(
   // Sales CPI charged to the client
   const salesCpi = row.salesCpi !== undefined ? row.salesCpi : 7.50;
 
-  const totalCost = externalCost + pmFee;
-
   // RULE: The weighted CPI always excludes the internal part.
   const totalVendorSample = allocatedVendors.reduce((acc, val) => acc + val, 0);
-  const weightedCpi = totalVendorSample > 0 ? externalCost / totalVendorSample : 0;
+  let weightedCpi = totalVendorSample > 0 ? externalCost / totalVendorSample : 0;
+
+  // RULE: If LOI is greater than database reference by up to 5 min,
+  // apply a +10% extra mark-up on weighted CPI so we are covered!
+  let hasLoiMarkup = false;
+  let loiMarkupNote = '';
+  if (row.hasLoiMarkup && weightedCpi > 0) {
+    hasLoiMarkup = true;
+    weightedCpi = Number((weightedCpi * 1.10).toFixed(2));
+    externalCost = Number((totalVendorSample * weightedCpi).toFixed(2));
+    const loiDiffStr = row.loiDiff ? `+${row.loiDiff}m` : '+5m max';
+    const dbLoiStr = row.matchedDbLoi ? `${row.matchedDbLoi}m` : 'database';
+    loiMarkupNote = `LOI Assumption: Requested LOI (${row.loi}m) is higher (${loiDiffStr}) than database reference (${dbLoiStr}). Applied +10% safety mark-up on Weighted CPI.`;
+  }
+
+  const totalCost = externalCost + pmFee;
 
   // Determine active vendors names list
   const activeVendorsList: string[] = [];
@@ -348,6 +406,9 @@ export function calculateRowAllocation(
     internalCostRef,
     totalCost,
     weightedCpi,
+    hasLoiMarkup,
+    loiMarkupNote,
+    irReductionPct: row.irReductionPct,
     overlapPenaltyPct: currentPenaltyPct,
     numPanelsUsed,
     numVendorsUsed,
@@ -461,8 +522,14 @@ export function deduplicateDbRows(rows: any[]): any[] {
     const irVal = r.irPercent !== undefined ? r.irPercent : (r['ir%'] !== undefined ? r['ir%'] : (r.irPercentDecimal !== undefined ? r.irPercentDecimal : 0));
     const ir = cleanPercent(irVal);
 
-    // Identify duplicates strictly by Country/Market, LOI, and IR%
-    const specKey = `${market}|${loi}|${ir.toFixed(4)}`;
+    // Identify specifications strictly by Country&LOI&IR%&IRUniverse&Quotas
+    const universeRaw = r.irUniverse || r.target || r['IR Universe'] || r.Target || '';
+    const universe = cleanSpecString(universeRaw);
+
+    const quotasRaw = r.quotas !== undefined ? r.quotas : (r.Quotas !== undefined ? r.Quotas : '');
+    const quotas = isNoQuotas(quotasRaw) ? 'noquotas' : cleanSpecString(quotasRaw);
+
+    const specKey = `${market}&${loi}&${ir.toFixed(4)}&${universe}&${quotas}`;
 
     if (seenSpecs.has(specKey)) {
       const existing = seenSpecs.get(specKey)!;
@@ -471,10 +538,33 @@ export function deduplicateDbRows(rows: any[]): any[] {
       
       // Keep the one with the higher internal capability to ensure accurate max limits
       if (currentInternal > existingInternal) {
-        seenSpecs.set(specKey, r);
+        existing.internal = currentInternal;
+      }
+
+      // Preserve match metadata across merged lines
+      if (r._matchMetadata && !existing._matchMetadata) {
+        existing._matchMetadata = r._matchMetadata;
+      }
+
+      // Preserve vendor capabilities from different lines without duplication:
+      // For each vendor, take the highest capacity and best (cheaper) CPI
+      for (let v = 1; v <= 43; v++) {
+        const capKey = `vendor${v}`;
+        const cpiKey = `vendor${v}Cpi`;
+        const currCap = Number(r[capKey] || 0);
+        const currCpi = parseFloat(r[cpiKey] || 0);
+        const existCap = Number(existing[capKey] || 0);
+        const existCpi = parseFloat(existing[cpiKey] || 0);
+
+        if (currCap > existCap) {
+          existing[capKey] = currCap;
+          if (currCpi > 0) existing[cpiKey] = currCpi;
+        } else if (currCap === existCap && currCap > 0 && currCpi > 0 && (existCpi === 0 || currCpi < existCpi)) {
+          existing[cpiKey] = currCpi;
+        }
       }
     } else {
-      seenSpecs.set(specKey, r);
+      seenSpecs.set(specKey, { ...r });
     }
   }
 

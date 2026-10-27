@@ -31,6 +31,7 @@ export const ALL_COUNTRIES = [
   "Cambodia",
   "Cameroon",
   "Canada",
+  "Canary Islands",
   "Central African Republic",
   "Chad",
   "Chile",
@@ -42,7 +43,7 @@ export const ALL_COUNTRIES = [
   "Croatia",
   "Cuba",
   "Cyprus",
-  "Czechia (Czech Republic)",
+  "Czech Republic",
   "Democratic Republic of the Congo",
   "Denmark",
   "Djibouti",
@@ -74,6 +75,7 @@ export const ALL_COUNTRIES = [
   "Haiti",
   "Holy See",
   "Honduras",
+  "Hong Kong",
   "Hungary",
   "Iceland",
   "India",
@@ -90,6 +92,7 @@ export const ALL_COUNTRIES = [
   "Kazakhstan",
   "Kenya",
   "Kiribati",
+  "Kosovo",
   "Kuwait",
   "Kyrgyzstan",
   "Laos",
@@ -101,6 +104,7 @@ export const ALL_COUNTRIES = [
   "Liechtenstein",
   "Lithuania",
   "Luxembourg",
+  "Macao",
   "Madagascar",
   "Malawi",
   "Malaysia",
@@ -123,12 +127,14 @@ export const ALL_COUNTRIES = [
   "Nauru",
   "Nepal",
   "Netherlands",
+  "New Caledonia",
   "New Zealand",
   "Nicaragua",
   "Niger",
   "Nigeria",
   "North Korea",
   "North Macedonia",
+  "Northern Ireland",
   "Norway",
   "Oman",
   "Pakistan",
@@ -140,8 +146,11 @@ export const ALL_COUNTRIES = [
   "Peru",
   "Philippines",
   "Poland",
+  "Polynesia",
   "Portugal",
+  "Puerto Rico",
   "Qatar",
+  "Reunion Island",
   "Romania",
   "Russia",
   "Rwanda",
@@ -152,6 +161,7 @@ export const ALL_COUNTRIES = [
   "San Marino",
   "Sao Tome and Principe",
   "Saudi Arabia",
+  "Scotland",
   "Senegal",
   "Serbia",
   "Seychelles",
@@ -170,6 +180,7 @@ export const ALL_COUNTRIES = [
   "Suriname",
   "Sweden",
   "Switzerland",
+  "Taiwan",
   "Syria",
   "Tajikistan",
   "Tanzania",
@@ -188,15 +199,97 @@ export const ALL_COUNTRIES = [
   "United Kingdom",
   "United States",
   "Uruguay",
-  "US",
-  "USA",
-  "UK",
-  "UAE",
   "Uzbekistan",
   "Vanuatu",
   "Venezuela",
   "Vietnam",
+  "Wales",
   "Yemen",
   "Zambia",
   "Zimbabwe"
 ];
+
+export const COUNTRY_ALIASES: Record<string, string> = {
+  // UAE
+  'uae': 'United Arab Emirates',
+  'u.a.e.': 'United Arab Emirates',
+  'united arab emirates': 'United Arab Emirates',
+  // UK
+  'uk': 'United Kingdom',
+  'u.k.': 'United Kingdom',
+  'united kingdom': 'United Kingdom',
+  'great britain': 'United Kingdom',
+  'gb': 'United Kingdom',
+  // US / USA
+  'us': 'United States',
+  'u.s.': 'United States',
+  'usa': 'United States',
+  'u.s.a.': 'United States',
+  'united states': 'United States',
+  'united states of america': 'United States',
+  // Saudi Arabia
+  'ksa': 'Saudi Arabia',
+  'k.s.a.': 'Saudi Arabia',
+  'saudi arabia': 'Saudi Arabia',
+  // Czechia
+  'czechia': 'Czech Republic',
+  'czech republic': 'Czech Republic',
+  'czechia (czech republic)': 'Czech Republic',
+  // Korea
+  'south korea': 'South Korea',
+  'korea, south': 'South Korea',
+  'republic of korea': 'South Korea',
+  'korea': 'South Korea',
+  // Bosnia
+  'bosnia': 'Bosnia And Herzegovina',
+  'bosnia and herzegovina': 'Bosnia And Herzegovina',
+  'bosnia & herzegovina': 'Bosnia And Herzegovina',
+  // Congo
+  'drc': 'Democratic Republic of the Congo',
+  'dr congo': 'Democratic Republic of the Congo',
+  'democratic republic of the congo': 'Democratic Republic of the Congo',
+  'democratic republic of congo': 'Democratic Republic of the Congo',
+  'congo': 'Congo (Congo-Brazzaville)',
+  'congo (congo-brazzaville)': 'Congo (Congo-Brazzaville)',
+  // Netherlands
+  'netherland': 'Netherlands',
+  'the netherlands': 'Netherlands',
+  // Ivory Coast
+  'ivory coast': 'Ivory Coast',
+  "côte d'ivoire": 'Ivory Coast',
+  "cote d'ivoire": 'Ivory Coast',
+  "cote divoire": 'Ivory Coast',
+  "cote d\uFFFDivoire": 'Ivory Coast',
+  // Macedonia
+  'macedonia': 'North Macedonia',
+  'former yugoslav republic of macedonia': 'North Macedonia',
+  // Myanmar
+  'myanmar': 'Myanmar (formerly Burma)',
+  'burma': 'Myanmar (formerly Burma)',
+  'myanmar (burma)': 'Myanmar (formerly Burma)',
+  // Scotland
+  'scotland only': 'Scotland',
+  // Hong Kong
+  'hk': 'Hong Kong',
+  'hong kong': 'Hong Kong'
+};
+
+export function getCanonicalCountryName(country?: string): string {
+  if (!country || typeof country !== 'string') return '';
+  const trimmed = country.trim();
+  const lower = trimmed.toLowerCase();
+  if (COUNTRY_ALIASES[lower]) {
+    return COUNTRY_ALIASES[lower];
+  }
+  const match = ALL_COUNTRIES.find(c => c.toLowerCase() === lower);
+  if (match) return match;
+  return trimmed;
+}
+
+export function isValidCountry(country?: string): boolean {
+  if (!country || typeof country !== 'string') return false;
+  const trimmed = country.trim().toLowerCase();
+  if (!trimmed) return false;
+  if (COUNTRY_ALIASES[trimmed]) return true;
+  return ALL_COUNTRIES.some(c => c.toLowerCase() === trimmed);
+}

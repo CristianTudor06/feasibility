@@ -1,19 +1,21 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FeasibilityRow, VendorTier, StrategyType, ChatMessage } from './types';
 import { DEFAULT_PITCHES, DEFAULT_VENDORS, VENDOR_DATABASE_POOL } from './data/defaultData';
 import { safeStorage } from './lib/storage';
 import { api, SavedOption } from './lib/api';
-import { downloadBRDDocument, downloadSetupManualDocument } from './lib/docxGenerator';
 import { parseCSVToPitches } from './lib/csvParser';
-import { calculateAllRows, calculateOptimizedAllocations, deduplicateDbRows } from './lib/calculator';
-import { generateBoardPresentation } from './lib/pptxGenerator';
+import { calculateRowAllocation, calculateAllRows, calculateOptimizedAllocations, deduplicateDbRows } from './lib/calculator';
+import { findBestDbMatches, isValidCountry } from './lib/matching';
 
 // Import newly created modular components
 import DatabaseGrid from './components/DatabaseGrid';
 import SpecsCalculator from './components/SpecsCalculator';
 import ChatPane from './components/ChatPane';
 import VendorManager from './components/VendorManager';
+
+import { downloadComprehensiveRulesManual } from './lib/docxGenerator';
+import { ATTACHED_REFERENCE_SPECS } from './data/attachedSpecsData';
 
 import {
   Compass,
@@ -35,9 +37,13 @@ import {
   ChevronUp,
   Trash2,
   FileText,
+  FileDown,
   Settings,
   Settings2,
-  Presentation
+  Presentation,
+  Sliders,
+  RotateCcw,
+  X
 } from 'lucide-react';
 
 export default function App() {
@@ -71,16 +77,11 @@ export default function App() {
   const [showTzDropdown, setShowTzDropdown] = useState(false);
 
   const isSystemUpdatingRef = useRef(false);
+  const setToastNotification = (_val: any) => {};
 
-  // Feasibility strategy change handler with confirmation checks
+  // Feasibility strategy change handler
   const handleChangeStrategy = (newStrategy: StrategyType) => {
     if (activeStrategy === newStrategy) return;
-    if (hasManualAdjustments()) {
-      const ok = window.confirm(
-        "Manual adjustments have been made to your specifications. Changing the Feasibility Strategy will affect your manual adjustments and overwrite current allocations. Do you want to proceed and change?"
-      );
-      if (!ok) return;
-    }
     setActiveStrategy(newStrategy);
     safeStorage.setItem('procurement_active_strategy', newStrategy);
   };
@@ -189,6 +190,7 @@ export default function App() {
   };
 
   const [showSettingsDropdown, setShowSettingsDropdown] = useState(false);
+  const [isGeneratingDoc, setIsGeneratingDoc] = useState(false);
   const settingsDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -202,24 +204,6 @@ export default function App() {
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, []);
-
-  const handleDownloadBrdDocx = async () => {
-    try {
-      await downloadBRDDocument(pitches, computedAllocations, activeStrategy, vendors, selectedCityTz);
-    } catch (err: any) {
-      console.error(err);
-      alert(`Failed to download BRD Word document: ${err.message || err}`);
-    }
-  };
-
-  const handleDownloadSetupDocx = async () => {
-    try {
-      await downloadSetupManualDocument(pitches, vendors, selectedCityTz);
-    } catch (err: any) {
-      console.error(err);
-      alert(`Failed to download Setup Manual: ${err.message || err}`);
-    }
-  };
 
   const hasManualAdjustments = () => {
     return pitches.some(p => {
@@ -248,7 +232,10 @@ export default function App() {
 
   const handleStartChecking = async () => {
     if (pitches.length === 0) {
-      alert("No active specifications found. Please insert or load options first!");
+      setToastNotification({
+        message: "No active specifications found. Please insert or load options first!",
+        type: 'error'
+      });
       return;
     }
     if (hasManualAdjustments()) {
@@ -260,7 +247,10 @@ export default function App() {
 
   const handleStartCheckingForOptions = async () => {
     if (pitches.length === 0) {
-      alert("No active specifications found. Please insert or load options first!");
+      setToastNotification({
+        message: "No active specifications found. Please insert or load options first!",
+        type: 'error'
+      });
       return;
     }
     if (hasManualAdjustments()) {
@@ -272,10 +262,17 @@ export default function App() {
 
   const handleStartCheckingOptimized = async () => {
     if (pitches.length === 0) {
-      alert("No active specifications found. Please insert or load options first!");
+      setToastNotification({
+        message: "No active specifications found. Please insert or load options first!",
+        type: 'error'
+      });
       return;
     }
-    setShowOptimizedCheckDialog(true);
+    if (hasManualAdjustments()) {
+      setShowOptimizedCheckDialog(true);
+    } else {
+      await executeCheck(true, pitches, false, allowSameLineTwice);
+    }
   };
 
   const executeCheck = async (isOptimized: boolean, pitchesToUse: FeasibilityRow[], isSilent: boolean = false, optAllowSameLineTwice?: boolean) => {
@@ -290,175 +287,14 @@ export default function App() {
       setAllowSameLineTwice(optAllowSameLineTwice);
     }
 
-    const isNoQuotas = (qStr: string): boolean => {
-      const s = qStr.toLowerCase().trim();
-      return !s || s === 'no' || s === 'no quotas' || s === 'none' || s === 'no quota' || s === 'n/a' || s === 'noquotas';
-    };
-
-    const matchDbRowToPitchSpec = (dbRow: FeasibilityRow, pitch: FeasibilityRow): boolean => {
-      // Country/Market check (clean case-insensitive comparison of alphanumeric characters)
-      const m1 = String(dbRow.market || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const m2 = String(pitch.market || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (m1 !== m2) return false;
-
-      // B. LOI Check
-      const loiDb = Number(dbRow.loi || 0);
-      const loiPitch = Number(pitch.loi || 0);
-      if (loiDb > 0 && loiPitch > 0 && Math.round(loiDb) !== Math.round(loiPitch)) {
-        return false;
-      }
-
-      // C. IR% (with narrow margin of exact match or extremely close within 0.5% for precise apples-to-apples)
-      const irDb = Number(dbRow.irPercent || 0);
-      const irPitch = Number(pitch.irPercent || 0);
-      if (irDb > 0 && irPitch > 0 && Math.abs(irDb - irPitch) > 0.005) {
-        return false;
-      }
-
-      // D. IR Universe (or Target) synonymic exact/clean apples-to-apples matching
-      const u1Db = String(dbRow.irUniverse || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const u1Pitch = String(pitch.irUniverse || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const tDb = String(dbRow.target || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const tPitch = String(pitch.target || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-
-      if (u1Pitch) {
-        const universeMatch = (u1Db === u1Pitch) || (tDb === tPitch);
-        if (!universeMatch) return false;
-      }
-
-      // E. Quotas specification check with special "No" fallback rule
-      const qDbClean = String(dbRow.quotas || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const qPitchClean = String(pitch.quotas || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-
-      const pitchNoQuotas = isNoQuotas(qPitchClean);
-      const dbNoQuotas = isNoQuotas(qDbClean);
-
-      if (!pitchNoQuotas) {
-        // Specs require quotas, so DB row MUST have quotas (cannot be no-quotas)
-        if (dbNoQuotas) {
-          return false;
-        }
-        // And must match the specific quotas
-        if (qDbClean !== qPitchClean && !qDbClean.includes(qPitchClean) && !qPitchClean.includes(qDbClean)) {
-          return false;
-        }
-      }
-
-      return true;
-    };
-
-    const findBestDbMatches = (pitch: FeasibilityRow, dbRows: FeasibilityRow[], excludedIds: Set<string>): FeasibilityRow[] => {
-      const candidates = dbRows.filter(dbRow => !excludedIds.has(dbRow.id));
-
-      const scoredCandidates = candidates.map(dbRow => {
-        // Country/Market check (CRITICAL: different countries can NEVER match)
-        const m1 = String(dbRow.market || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        const m2 = String(pitch.market || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (m1 !== m2) return { dbRow, score: -99999 };
-
-        let score = 10; // Base score for matching Country
-
-        // B. LOI Check
-        const loiDb = Number(dbRow.loi || 0);
-        const loiPitch = Number(pitch.loi || 0);
-        if (loiDb > 0 && loiPitch > 0) {
-          const diff = Math.abs(loiDb - loiPitch);
-          if (diff === 0) score += 20;
-          else if (diff <= 2) score += 15;
-          else if (diff <= 5) score += 10;
-          else if (diff <= 10) score += 5;
-        }
-
-        // C. IR%
-        const irDb = Number(dbRow.irPercent || 0);
-        const irPitch = Number(pitch.irPercent || 0);
-        if (irDb > 0 && irPitch > 0) {
-          const diff = Math.abs(irDb - irPitch);
-          if (diff <= 0.005) score += 20;
-          else if (diff <= 0.02) score += 15;
-          else if (diff <= 0.05) score += 10;
-          else if (diff <= 0.10) score += 5;
-        }
-
-        // D. IR Universe / Target Description
-        const u1Db = String(dbRow.irUniverse || '').toLowerCase().trim();
-        const u1Pitch = String(pitch.irUniverse || '').toLowerCase().trim();
-        const tDb = String(dbRow.target || '').toLowerCase().trim();
-        const tPitch = String(pitch.target || '').toLowerCase().trim();
-
-        if (u1Pitch || tPitch) {
-          const uDbClean = u1Db.replace(/[^a-z0-9]/g, '');
-          const uPitchClean = u1Pitch.replace(/[^a-z0-9]/g, '');
-          const tDbClean = tDb.replace(/[^a-z0-9]/g, '');
-          const tPitchClean = tPitch.replace(/[^a-z0-9]/g, '');
-
-          if (uPitchClean === uDbClean || tPitchClean === tDbClean) {
-            score += 30; // Exact match
-          } else if (uDbClean.includes(uPitchClean) || uPitchClean.includes(uDbClean) || tDbClean.includes(tPitchClean) || tPitchClean.includes(tDbClean)) {
-            score += 15; // Containment match
-          } else {
-            // Shared words check
-            const wDb = u1Db.split(/\s+/).filter(w => w.length >= 2);
-            const wPitch = u1Pitch.split(/\s+/).filter(w => w.length >= 2);
-            let sharedCount = 0;
-            wPitch.forEach(wp => {
-              if (wDb.some(wd => wd.includes(wp) || wp.includes(wd))) {
-                sharedCount++;
-              }
-            });
-            score += sharedCount * 5;
-          }
-        }
-
-        // E. Quotas spec
-        const qDbClean = String(dbRow.quotas || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        const qPitchClean = String(pitch.quotas || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (qDbClean === qPitchClean) {
-          score += 10;
-        } else if (qDbClean.includes(qPitchClean) || qPitchClean.includes(qDbClean)) {
-          score += 5;
-        }
-
-        return { dbRow, score };
-      });
-
-      // Filter to only matching country and sort by score descending
-      const validScored = scoredCandidates.filter(item => item.score >= 10);
-      if (validScored.length === 0) return [];
-
-      validScored.sort((a, b) => b.score - a.score);
-
-      const topScore = validScored[0].score;
-      // We return all rows matching close to the topScore (within 5 points) or having general high match score >= 50
-      const selected = validScored.filter(item => {
-        return (item.score >= 50) || (item.score >= topScore - 5);
-      });
-
-      return selected.map(item => item.dbRow);
-    };
-
     const aggregateCapabilities = (dbRows: FeasibilityRow[]) => {
       const deduplicatedDbRows = deduplicateDbRows(dbRows);
-      // 1. Find all matching database rows across all checked pitches using scoring logic
+      // 1. Find all matching database rows across all checked pitches using 100% specs & tolerance rules
       const allMatches: FeasibilityRow[] = [];
-      const pitchGroupsTest: { [name: string]: FeasibilityRow[] } = {};
-      pitchesToUse.forEach(p => {
-        const name = p.pitchName || 'Default';
-        if (!pitchGroupsTest[name]) pitchGroupsTest[name] = [];
-        pitchGroupsTest[name].push(p);
-      });
-
-      Object.values(pitchGroupsTest).forEach(pitchGroup => {
-        pitchGroup.forEach(pitch => {
-          if (pitch.isLocked) {
-            return; // Skip locked rows in matching
-          }
-          const groupMatches = findBestDbMatches(pitch, deduplicatedDbRows, new Set<string>());
-
-          groupMatches.forEach(m => {
-            allMatches.push(m);
-          });
-        });
+      pitchesToUse.forEach(pitch => {
+        if (pitch.isLocked) return;
+        const groupMatches = findBestDbMatches(pitch, deduplicatedDbRows, new Set<string>());
+        groupMatches.forEach(m => allMatches.push(m));
       });
 
       // 2. Scan all matches to detect which vendors possess actual delivered capabilities (> 0 capacity)
@@ -489,8 +325,8 @@ export default function App() {
         } else {
           detectedVendorsList.push({
             name,
-            tier: 'tier 3',
-            color: 'orange'
+            tier: 'No Tier',
+            color: 'Grey'
           });
         }
       });
@@ -498,6 +334,7 @@ export default function App() {
       // 3. Sort detected vendors strictly based on Tier and Color priorities!
       const pTierValue = (tierStr: string): number => {
         const t = String(tierStr || '').toLowerCase();
+        if (t.includes('do not use')) return 999;
         if (t.includes('0') || t.includes('prime')) return 0;
         if (t.includes('1')) return 1;
         if (t.includes('2')) return 2;
@@ -507,10 +344,12 @@ export default function App() {
 
       const pColorValue = (colorStr: string): number => {
         const c = String(colorStr || '').toLowerCase();
+        if (c.includes('red')) return 999;
         if (c.includes('green')) return 1;
         if (c.includes('yellow')) return 2;
         if (c.includes('orange')) return 3;
-        return 4;
+        if (c.includes('grey') || c.includes('gray')) return 4;
+        return 5;
       };
 
       detectedVendorsList.sort((a, b) => {
@@ -539,105 +378,163 @@ export default function App() {
       const activeVendorsList = mergedVendors.length > 0 ? mergedVendors : DEFAULT_VENDORS;
       setVendors(activeVendorsList);
 
-      const groups: { [name: string]: FeasibilityRow[] } = {};
-      pitchesToUse.forEach(p => {
-        const name = p.pitchName || 'Default';
-        if (!groups[name]) groups[name] = [];
-        groups[name].push(p);
-      });
-
       const updatedPitches: FeasibilityRow[] = [];
+      const usedDbRowIdSet = new Set<string>();
 
-      Object.entries(groups).forEach(([pitchName, pitchGroup]) => {
-        const usedDbRowIdSet = new Set<string>();
+      // Maintain strict sequential audience order (never shuffle audiences!)
+      pitchesToUse.forEach(pitch => {
+        if (pitch.isLocked) {
+          updatedPitches.push(pitch);
+          return; // Preserve locked pitches completely unaffected!
+        }
 
-        pitchGroup.forEach(pitch => {
-          if (pitch.isLocked) {
-            updatedPitches.push(pitch);
-            return; // Preserve locked pitches completely unaffected!
-          }
+        const matches = findBestDbMatches(pitch, deduplicatedDbRows, activeAllowSameLineTwice ? new Set<string>() : usedDbRowIdSet);
 
-          const matches = findBestDbMatches(pitch, deduplicatedDbRows, activeAllowSameLineTwice ? new Set<string>() : usedDbRowIdSet);
+        const updatedPitch = { ...pitch };
 
-          const updatedPitch = { ...pitch };
+        if (matches.length > 0) {
+          const deduplicatedMatches = deduplicateDbRows(matches);
 
-          if (matches.length > 0) {
-            const deduplicatedMatches = deduplicateDbRows(matches);
+          // Get aggregated capacities from the matched rows
+          let aggregatedInternal = 0;
+          const aggregatedVendors: { [vIdx: number]: number } = {};
+          const aggregatedVendorCpis: { [vIdx: number]: number } = {};
 
-            // Get aggregated capacities from the matched rows
-            let aggregatedInternal = 0;
-            const aggregatedVendors: { [vIdx: number]: number } = {};
-            const aggregatedVendorCpis: { [vIdx: number]: number } = {};
+          const numActiveVendors = activeVendorsList.length;
 
-            const numActiveVendors = activeVendorsList.length;
+          deduplicatedMatches.forEach(mr => {
+            if (!activeAllowSameLineTwice) {
+              usedDbRowIdSet.add(mr.id);
+            }
 
-            deduplicatedMatches.forEach(mr => {
-              if (!activeAllowSameLineTwice) {
-                usedDbRowIdSet.add(mr.id);
-              }
+            // IR reduction factor: if incidence requested is lower by up to -10%,
+            // feasibility generated is reduced by this percentage to reflect reality!
+            const reductionFactor = mr._matchMetadata?.irReductionFactor ?? 1.0;
 
-              aggregatedInternal += mr.internal || 0;
+            // Across lines, take the highest internal capability without duplicating
+            const reducedInternal = Math.round((mr.internal || 0) * reductionFactor);
+            if (reducedInternal > aggregatedInternal) {
+              aggregatedInternal = reducedInternal;
+            }
 
-              for (let idx = 0; idx < numActiveVendors; idx++) {
-                const vIdx = idx + 1;
-                const vendorObj = activeVendorsList[idx];
-                const nameLower = vendorObj.name.toLowerCase();
-                const matchNum = nameLower.match(/\d+/);
-                const vendorNumInDb = matchNum ? parseInt(matchNum[0], 10) : vIdx;
+            for (let idx = 0; idx < numActiveVendors; idx++) {
+              const vIdx = idx + 1;
+              const vendorObj = activeVendorsList[idx];
+              const nameLower = vendorObj.name.toLowerCase();
+              const matchNum = nameLower.match(/\d+/);
+              const vendorNumInDb = matchNum ? parseInt(matchNum[0], 10) : vIdx;
 
-                const dbCapKey = `vendor${vendorNumInDb}`;
-                const dbCpiKey = `vendor${vendorNumInDb}Cpi`;
+              const dbCapKey = `vendor${vendorNumInDb}`;
+              const dbCpiKey = `vendor${vendorNumInDb}Cpi`;
 
-                const cap = Number((mr as any)[dbCapKey]) || 0;
-                aggregatedVendors[vIdx] = (aggregatedVendors[vIdx] || 0) + cap;
+              const rawCap = Number((mr as any)[dbCapKey]) || 0;
+              const vendorCap = Math.round(rawCap * reductionFactor);
+              const cpiVal = parseFloat((mr as any)[dbCpiKey]);
 
-                const cpiVal = parseFloat((mr as any)[dbCpiKey]);
+              // Across lines, vendors are NOT duplicated: take highest capacity and best (cheaper) CPI
+              const existCap = aggregatedVendors[vIdx] || 0;
+              const existCpi = aggregatedVendorCpis[vIdx] || 0;
+
+              if (vendorCap > existCap) {
+                aggregatedVendors[vIdx] = vendorCap;
                 if (cpiVal > 0) {
                   aggregatedVendorCpis[vIdx] = cpiVal;
                 }
+              } else if (vendorCap === existCap && vendorCap > 0 && cpiVal > 0 && (existCpi === 0 || cpiVal < existCpi)) {
+                aggregatedVendorCpis[vIdx] = cpiVal;
               }
-            });
-
-            updatedPitch.internal = aggregatedInternal;
-
-            const firstWithLimit = deduplicatedMatches.find(mr => mr.maxInternalPercent !== undefined);
-            if (firstWithLimit) {
-              updatedPitch.maxInternalPercent = firstWithLimit.maxInternalPercent;
             }
+          });
 
-            for (let idx = 0; idx < numActiveVendors; idx++) {
-              const vIdx = idx + 1;
-              (updatedPitch as any)[`vendor${vIdx}`] = aggregatedVendors[vIdx] || 0;
-              (updatedPitch as any)[`vendor${vIdx}Cpi`] = aggregatedVendorCpis[vIdx] || 0;
-            }
+          updatedPitch.internal = aggregatedInternal;
+
+          // Pass LOI markup and IR reduction metadata to pitch row
+          const matchWithLoiMarkup = deduplicatedMatches.find(mr => mr._matchMetadata?.hasLoiMarkup);
+          if (matchWithLoiMarkup) {
+            updatedPitch.hasLoiMarkup = true;
+            updatedPitch.loiDiff = matchWithLoiMarkup._matchMetadata?.loiDiff;
+            updatedPitch.matchedDbLoi = matchWithLoiMarkup._matchMetadata?.matchedDbLoi;
           } else {
-            updatedPitch.internal = 0;
-            const numActiveVendors = activeVendorsList.length;
-            for (let idx = 0; idx < numActiveVendors; idx++) {
-              const vIdx = idx + 1;
-              (updatedPitch as any)[`vendor${vIdx}`] = 0;
-              (updatedPitch as any)[`vendor${vIdx}Cpi`] = 0;
-            }
+            updatedPitch.hasLoiMarkup = false;
+            delete updatedPitch.loiDiff;
+            delete updatedPitch.matchedDbLoi;
           }
 
-          updatedPitches.push(updatedPitch);
-        });
+          const matchWithIrReduction = deduplicatedMatches.find(mr => (mr._matchMetadata?.irReductionPct || 0) > 0);
+          if (matchWithIrReduction) {
+            updatedPitch.irReductionPct = matchWithIrReduction._matchMetadata?.irReductionPct;
+          } else {
+            delete updatedPitch.irReductionPct;
+          }
+
+          const firstWithLimit = deduplicatedMatches.find(mr => mr.maxInternalPercent !== undefined);
+          if (firstWithLimit) {
+            updatedPitch.maxInternalPercent = firstWithLimit.maxInternalPercent;
+          }
+
+          for (let idx = 0; idx < numActiveVendors; idx++) {
+            const vIdx = idx + 1;
+            (updatedPitch as any)[`vendor${vIdx}`] = aggregatedVendors[vIdx] || 0;
+            (updatedPitch as any)[`vendor${vIdx}Cpi`] = aggregatedVendorCpis[vIdx] || 0;
+          }
+        } else {
+          // No match or gibberish country: 0 output
+          updatedPitch.internal = 0;
+          updatedPitch.hasLoiMarkup = false;
+          delete updatedPitch.loiDiff;
+          delete updatedPitch.matchedDbLoi;
+          delete updatedPitch.irReductionPct;
+          const numActiveVendors = activeVendorsList.length;
+          for (let idx = 0; idx < numActiveVendors; idx++) {
+            const vIdx = idx + 1;
+            (updatedPitch as any)[`vendor${vIdx}`] = 0;
+            (updatedPitch as any)[`vendor${vIdx}Cpi`] = 0;
+          }
+        }
+
+        updatedPitches.push(updatedPitch);
       });
 
       return updatedPitches;
     };
 
-    // Require local database to be inserted, alert otherwise without failing
-    if (!insertedDatabase || insertedDatabase.length === 0) {
-      if (!isSilent) {
-        setIsChecking(false);
-        alert("Database not available, please insert it.");
-      }
-      return;
-    }
+    const activeDb: FeasibilityRow[] = (insertedDatabase && insertedDatabase.length > 0)
+      ? insertedDatabase
+      : ATTACHED_REFERENCE_SPECS.map((spec, idx) => ({
+          id: `ref-db-${idx}`,
+          pitchName: `Ref Spec ${idx + 1}`,
+          source: 'System DB',
+          option: String(idx + 1),
+          market: spec.market,
+          target: spec.universe,
+          loi: spec.loi,
+          irPercent: parseFloat(String(spec.irRaw || '0').replace('%', '')) / 100 || 0,
+          irUniverse: spec.universe,
+          quotas: spec.quotas || 'No quotas',
+          waves: 1,
+          totalFreshSample: 1000,
+          totalSampleSize: 1000,
+          internal: 3000,
+          maxInternalPercent: 100,
+          vendor1: 2000,
+          vendor1Cpi: 4.5,
+          vendor2: 1200,
+          vendor2Cpi: 6.0,
+          vendor3: 800,
+          vendor3Cpi: 7.5,
+          vendor4: 500,
+          vendor4Cpi: 9.0,
+          vendor1Pct: 100,
+          vendor2Pct: 100,
+          vendor3Pct: 100,
+          vendor4Pct: 100,
+          pmFee: 150,
+          salesCpi: 7.50,
+          comparability: 'High'
+        }));
 
     try {
-      const updatedPitches = aggregateCapabilities(insertedDatabase);
+      const updatedPitches = aggregateCapabilities(activeDb);
 
       // Target pricing optimized check
       if (targetedBudget > 0) {
@@ -666,10 +563,12 @@ export default function App() {
           setHasChecked(true);
           setIsChecking(false);
           isSystemUpdatingRef.current = false;
-          alert(isOptimized
-            ? `Feasibility Optimized check complete! Verified allocations with your manual adjustments and budget optimization.`
-            : `Feasibility check complete! Successfully matched specifications with the locally inserted database (${insertedDatabase.length} records) and compiled standard allocations.`
-          );
+          setToastNotification({
+            message: isOptimized
+              ? `Feasibility Optimized check complete! Verified allocations with your manual adjustments and budget optimization.`
+              : `Feasibility check complete! Successfully matched specifications with reference database (${activeDb.length.toLocaleString()} records) and compiled standard allocations.`,
+            type: 'success'
+          });
         }, 200);
       }
       return;
@@ -677,14 +576,17 @@ export default function App() {
       console.warn("Error running local lookup database:", err);
       if (!isSilent) {
         setIsChecking(false);
-        alert(`Error executing feasibility check: ${err.message || err}`);
+        setToastNotification({
+          message: `Error executing feasibility check: ${err.message || err}`,
+          type: 'error'
+        });
       }
     }
   };
 
   const handleUpdatePitches = (newPitches: FeasibilityRow[], preserveHasChecked?: boolean) => {
     setPitches(newPitches);
-    if (liveFeasibility && insertedDatabase && insertedDatabase.length > 0 && !isSystemUpdatingRef.current) {
+    if (liveFeasibility && !isSystemUpdatingRef.current) {
       // Execute background calculation silently and automatically to update stats in real time
       executeCheck(useOptimizedRules, newPitches, true);
     } else if (!preserveHasChecked) {
@@ -719,9 +621,11 @@ export default function App() {
     return () => clearInterval(timer);
   }, [selectedCityTz]);
 
-  const rawAllocations = useOptimizedRules
-    ? calculateOptimizedAllocations(pitches, activeStrategy, vendors, targetedBudget, allowSameLineTwice)
-    : calculateAllRows(pitches, activeStrategy, vendors, allowSameLineTwice);
+  const rawAllocations = useMemo(() => {
+    return useOptimizedRules
+      ? calculateOptimizedAllocations(pitches, activeStrategy, vendors, targetedBudget, allowSameLineTwice)
+      : calculateAllRows(pitches, activeStrategy, vendors, allowSameLineTwice);
+  }, [pitches, activeStrategy, vendors, targetedBudget, allowSameLineTwice, useOptimizedRules]);
 
   const computedAllocations = rawAllocations;
 
@@ -736,15 +640,29 @@ export default function App() {
           if (text) {
             const parsed = parseCSVToPitches(text);
             if (parsed.length > 0) {
-              await api.saveDatabase(parsed, file.name);
+              try {
+                await api.saveDatabase(parsed, file.name);
+              } catch (err: any) {
+                alert(`Could not save the database to the server: ${err.message || err}`);
+                return;
+              }
               setInsertedDatabase(parsed);
-              alert(`Successfully loaded local lookup database! ${parsed.length} entries matching Country/Market targets detected. Click "Check Feasibility" to match with active specifications.`);
+              setToastNotification({
+                message: `Successfully loaded local database! ${parsed.length} entries detected. Click "Check Feasibility" to match.`,
+                type: 'success'
+              });
             } else {
-              alert("Could not parse any rows from this file. Ensure columns match the required fields (Country/Market, Target, Internal Panel, Vendor Cap, Vendor CPI, etc.)");
+              setToastNotification({
+                message: "Could not parse any rows from this file. Ensure columns match the required fields.",
+                type: 'error'
+              });
             }
           }
         } catch (err: any) {
-          alert(`Error parsing database CSV: ${err.message || err}`);
+          setToastNotification({
+            message: `Error parsing database CSV: ${err.message || err}`,
+            type: 'error'
+          });
         }
       };
       reader.readAsText(file);
@@ -758,7 +676,10 @@ export default function App() {
         const finalName = resetBackupName.trim() || `Backup_${new Date().toLocaleDateString()}_Option`;
         const nameExists = savedOptions.some(o => o.name.toLowerCase() === finalName.toLowerCase());
         if (nameExists && savedOptions.length > 0) {
-          alert("An option with that name already exists. Please choose a different name to backup.");
+          setToastNotification({
+            message: "An option with that name already exists. Please choose a different name to backup.",
+            type: 'error'
+          });
           return;
         }
         const newSaved = {
@@ -780,15 +701,19 @@ export default function App() {
       return;
     }
 
-    // Clear everything
-    setPitches(DEFAULT_PITCHES);
-    setVendors(DEFAULT_VENDORS);
+    // Clear everything: wipe pitches to empty, budget to 0, clear storage
+    setPitches([]);
+    safeStorage.setItem('procurement_scenario_pitches', JSON.stringify([]));
+    handleSetTargetedBudget(0);
     setHasChecked(false);
     setResetBackupName('');
     setResetAlsoDatabase(false);
     setShowResetDialog(false);
 
-    alert(shouldSave ? "Current specifications saved, and system has been fully reset!" : "System has been fully reset!");
+    setToastNotification({
+      message: shouldSave ? "Current scenario saved, and quote has been fully reset to 0!" : "Quote reset: All audience lines, budget, and metrics have been reset to 0.",
+      type: 'info'
+    });
   };
 
   // Quick stats computed for top layout
@@ -805,18 +730,13 @@ export default function App() {
             <div className="p-1.5 bg-[#ebf8ff] text-[#2b6cb0] rounded-lg border border-[#bee3f8]">
               <Compass className="h-5 w-5" />
             </div>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h1 className="text-base font-bold tracking-tight text-slate-900 font-sans">
-                  CMT - <span className="text-[#2b6cb0]">Cost Management Tool</span>
-                </h1>
-                <span className="bg-[#ebf8ff] text-[#2b6cb0] text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider border border-[#bee3f8]">
-                  Set A-L Connected
-                </span>
-                <span className="bg-[#f0fff4] text-emerald-800 text-[10px] font-medium px-2 py-0.5 rounded-full border border-emerald-200">
-                  Live Preview
-                </span>
-              </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-base font-bold tracking-tight text-slate-900 font-sans">
+                <span className="text-[#2b6cb0]">Feasibility</span> Tool
+              </h1>
+              <span className="bg-[#f0fff4] text-emerald-800 text-[10px] font-medium px-2 py-0.5 rounded-full border border-emerald-200">
+                Live Preview
+              </span>
             </div>
           </div>
 
@@ -826,7 +746,7 @@ export default function App() {
               <button
                 onClick={() => setShowSettingsDropdown(!showSettingsDropdown)}
                 className="flex items-center gap-1.5 text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-300 text-[10px] font-bold px-3 py-1.5 rounded-lg shadow-xs transition-all cursor-pointer select-none"
-                title="Document downloads and preferences"
+                title="Display & Feasibility Settings"
               >
                 <Settings className="h-3.5 w-3.5 text-slate-500" />
                 <span>Settings</span>
@@ -834,60 +754,8 @@ export default function App() {
               </button>
 
               {showSettingsDropdown && (
-                <div className="absolute right-0 mt-1.5 w-60 bg-white rounded-xl border border-slate-200 shadow-xl py-2 z-50 animate-fade-in space-y-1">
+                <div className="absolute right-0 mt-1.5 w-64 bg-white rounded-xl border border-slate-200 shadow-xl py-2 z-50 animate-fade-in space-y-1">
                   <div className="px-3 py-1 text-[9px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 mb-1">
-                    Direct Downloads
-                  </div>
-
-                  {/* Download BRD Word File Option */}
-                  <div className="px-2.5 py-1.5 hover:bg-slate-50 flex items-center justify-between gap-2">
-                    <button
-                      onClick={() => {
-                        handleDownloadBrdDocx();
-                        setShowSettingsDropdown(false);
-                      }}
-                      className="flex-1 flex items-center gap-2 text-left text-xs text-slate-700 hover:text-blue-700 font-semibold cursor-pointer"
-                      title="Download BRD Document (.docx) directly"
-                    >
-                      <FileText className="h-3.5 w-3.5 text-blue-600 shrink-0" />
-                      <span className="truncate">Download BRD (.docx)</span>
-                    </button>
-                    <span className="text-[8px] bg-blue-50 text-blue-700 font-bold px-1.5 py-0.5 rounded border border-blue-200">Local</span>
-                  </div>
-
-                  {/* Download Setup Manual Option */}
-                  <div className="px-2.5 py-1.5 hover:bg-slate-50 flex items-center justify-between gap-2">
-                    <button
-                      onClick={() => {
-                        handleDownloadSetupDocx();
-                        setShowSettingsDropdown(false);
-                      }}
-                      className="flex-1 flex items-center gap-2 text-left text-xs text-slate-700 hover:text-blue-700 font-semibold cursor-pointer"
-                      title="Download Setup Manual (.docx) directly"
-                    >
-                      <Settings2 className="h-3.5 w-3.5 text-blue-600 shrink-0" />
-                      <span className="truncate">Download Setup (.docx)</span>
-                    </button>
-                    <span className="text-[8px] bg-blue-50 text-blue-700 font-bold px-1.5 py-0.5 rounded border border-blue-200">Local</span>
-                  </div>
-
-                  {/* Download Professional PPTX Presentation Option */}
-                  <div className="px-2.5 py-1.5 hover:bg-slate-50 flex items-center justify-between gap-2">
-                    <button
-                      onClick={() => {
-                        generateBoardPresentation();
-                        setShowSettingsDropdown(false);
-                      }}
-                      className="flex-1 flex items-center gap-2 text-left text-xs text-slate-700 hover:text-blue-700 font-semibold cursor-pointer"
-                      title="Download Executive Board Presentation (.pptx) directly"
-                    >
-                      <Presentation className="h-3.5 w-3.5 text-[#2b6cb0] shrink-0" />
-                      <span className="truncate">Download Board Deck (.pptx)</span>
-                    </button>
-                    <span className="text-[8px] bg-blue-50 text-blue-700 font-bold px-1.5 py-0.5 rounded border border-blue-200">Local</span>
-                  </div>
-
-                  <div className="px-3 py-1 text-[9px] font-bold text-slate-400 uppercase tracking-widest border-t border-b border-slate-100 mt-2 mb-1">
                     Feasibility Mode
                   </div>
                   <div className="px-3.5 py-1.5 flex items-center justify-between hover:bg-slate-50 rounded-lg mx-1.5">
@@ -919,38 +787,53 @@ export default function App() {
                   <div className="px-3.5 py-2 space-y-2 select-none">
                     <div className="flex items-center justify-between text-xs font-semibold text-slate-700">
                       <span>Grid Text Size:</span>
-                      <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[10px]">
-                        {tempFontSizeDelta === 0 ? "Standard (12pt)" : tempFontSizeDelta === 1 ? "+1pt (13pt)" : "-1pt (11pt)"}
+                      <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[10px] font-bold text-[#2b6cb0]">
+                        {tempFontSizeDelta === -2 ? "Compact (9pt)" :
+                         tempFontSizeDelta === -1 ? "Small (10.5pt)" :
+                         tempFontSizeDelta === 0 ? "Standard (12pt)" :
+                         tempFontSizeDelta === 1 ? "Medium (13.5pt)" : "Large (15pt)"}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (tempFontSizeDelta > -1) setTempFontSizeDelta(tempFontSizeDelta - 1);
+                          if (tempFontSizeDelta > -2) {
+                            const next = tempFontSizeDelta - 1;
+                            setTempFontSizeDelta(next);
+                            handleUpdateFontSizeDelta(next);
+                          }
                         }}
                         className="w-6 h-6 flex items-center justify-center bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded text-xs font-bold text-slate-700 active:scale-95 cursor-pointer"
-                        title="Decrease size by 1pt"
+                        title="Decrease size"
                       >
                         -
                       </button>
                       <input
                         type="range"
-                        min="-1"
-                        max="1"
+                        min="-2"
+                        max="2"
                         step="1"
                         value={tempFontSizeDelta}
-                        onChange={(e) => setTempFontSizeDelta(parseInt(e.target.value, 10))}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          setTempFontSizeDelta(val);
+                          handleUpdateFontSizeDelta(val);
+                        }}
                         onClick={(e) => e.stopPropagation()}
-                        className="flex-1 h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-[#2b6cb0]"
+                        className="flex-1 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-[#2b6cb0]"
                       />
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (tempFontSizeDelta < 1) setTempFontSizeDelta(tempFontSizeDelta + 1);
+                          if (tempFontSizeDelta < 2) {
+                            const next = tempFontSizeDelta + 1;
+                            setTempFontSizeDelta(next);
+                            handleUpdateFontSizeDelta(next);
+                          }
                         }}
                         className="w-6 h-6 flex items-center justify-center bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded text-xs font-bold text-slate-700 active:scale-95 cursor-pointer"
-                        title="Increase size by 1pt"
+                        title="Increase size"
                       >
                         +
                       </button>
@@ -959,11 +842,45 @@ export default function App() {
                       onClick={(e) => {
                         e.stopPropagation();
                         handleUpdateFontSizeDelta(tempFontSizeDelta);
+                        setShowSettingsDropdown(false);
                       }}
                       className="w-full text-center bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10.5px] py-1 rounded transition-all mt-1 cursor-pointer shadow-xs active:scale-95"
                     >
-                      Apply Font Size
+                      Apply & Close
                     </button>
+                  </div>
+
+                  <div className="px-3 py-1 text-[9px] font-bold text-slate-400 uppercase tracking-widest border-t border-b border-slate-100 mt-2 mb-1">
+                    System Architecture & Rules
+                  </div>
+                  <div className="px-3.5 py-1.5 space-y-1.5 select-none">
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        setIsGeneratingDoc(true);
+                        try {
+                          await downloadComprehensiveRulesManual(pitches, vendors, selectedCityTz, insertedDatabase);
+                        } catch (err) {
+                          console.error("Error generating manual:", err);
+                          setToastNotification({
+                            message: "Error generating documentation Word file.",
+                            type: 'error'
+                          });
+                        } finally {
+                          setIsGeneratingDoc(false);
+                          setShowSettingsDropdown(false);
+                        }
+                      }}
+                      disabled={isGeneratingDoc}
+                      className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-[#2b6cb0] to-indigo-700 hover:from-blue-700 hover:to-indigo-800 text-white font-bold text-[11px] py-2 px-2.5 rounded-lg shadow-xs transition-all cursor-pointer select-none active:scale-95 disabled:opacity-50"
+                      title="Download complete system specification, tab linkages, button workflows, feasibility engine rules, and assumptions as a local Word document (.docx)"
+                    >
+                      <FileDown className="h-4 w-4 shrink-0" />
+                      <span>{isGeneratingDoc ? 'Generating Word (.docx)...' : 'Download Complete Rules Manual (.docx)'}</span>
+                    </button>
+                    <p className="text-[8.5px] text-slate-400 text-center leading-tight">
+                      100% local client-side generation. No external Drive connection required.
+                    </p>
                   </div>
                 </div>
               )}
@@ -1031,6 +948,7 @@ export default function App() {
         {/* Navigation Sidebar Tabs */}
         <div className="flex flex-wrap border-b border-slate-200 gap-1 bg-white p-1 rounded-t-xl border border-b-0 border-slate-200" id="nav-tabs-rail">
           <button
+            type="button"
             onClick={() => setActiveTab('calculator')}
             className={`flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg transition-all duration-150 cursor-pointer ${activeTab === 'calculator' ? 'bg-[#ebf8ff] text-[#2b6cb0] font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'}`}
           >
@@ -1039,6 +957,7 @@ export default function App() {
           </button>
 
           <button
+            type="button"
             onClick={() => setActiveTab('scenarios')}
             className={`flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg transition-all duration-150 cursor-pointer ${activeTab === 'scenarios' ? 'bg-[#ebf8ff] text-[#2b6cb0] font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'}`}
           >
@@ -1047,19 +966,21 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setActiveTab('chat')}
-            className={`flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg transition-all duration-150 cursor-pointer ${activeTab === 'chat' ? 'bg-[#ebf8ff] text-[#2b6cb0] font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'}`}
-          >
-            <MessageSquare className="h-4 w-4" />
-            Chat Assistant
-          </button>
-
-          <button
+            type="button"
             onClick={() => setActiveTab('vendors')}
             className={`flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg transition-all duration-150 cursor-pointer ${activeTab === 'vendors' ? 'bg-[#ebf8ff] text-[#2b6cb0] font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'}`}
           >
             <Layers className="h-4 w-4" />
             Partner Mapping
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('chat')}
+            className={`flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg transition-all duration-150 cursor-pointer ${activeTab === 'chat' ? 'bg-[#ebf8ff] text-[#2b6cb0] font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'}`}
+          >
+            <MessageSquare className="h-4 w-4" />
+            Chat Assistant
           </button>
 
           {/* Saved Options Dropdown container */}
@@ -1153,105 +1074,99 @@ export default function App() {
               <span>{insertedDatabase ? `Database: Active (${insertedDatabase.length} rows)` : 'Insert Database'}</span>
             </button>
             <button
-              id="global-reset-bin-btn"
+              id="global-reset-quote-nav-btn"
               onClick={() => setShowResetDialog(true)}
-              className="text-slate-400 hover:text-rose-600 p-1.5 rounded-lg hover:bg-rose-50 transition cursor-pointer"
-              title="Reset all specifications, custom database, and clear everything done back to default"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition shadow-xs cursor-pointer ml-1"
+              title="Reset Quote: clear all audiences, set budget to 0, and clear all lines"
             >
-              <Trash2 className="h-3.5 w-3.5" />
+              <RotateCcw className="h-3.5 w-3.5 text-rose-600" />
+              <span>Reset Quote</span>
             </button>
           </div>
         </div>
 
-        {/* Tab contents wrapper with micro-animation */}
-        <div id="tab-viewport">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={activeTab}
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.15 }}
-            >
-              {activeTab === 'calculator' && (
-                <SpecsCalculator
-                  pitches={pitches}
-                  activeStrategy={activeStrategy}
-                  onChangeStrategy={handleChangeStrategy}
-                  onUpdatePitches={handleUpdatePitches}
-                  savedOptions={savedOptions}
-                  setSavedOptions={setSavedOptions}
-                  hasChecked={hasChecked}
-                  setHasChecked={setHasChecked}
-                  isChecking={isChecking}
-                  setIsChecking={setIsChecking}
-                  isReloading={isReloading}
-                  setIsReloading={setIsReloading}
-                  onStartChecking={handleStartChecking}
-                  onStartCheckingForOptions={handleStartCheckingForOptions}
-                  onStartCheckingOptimized={handleStartCheckingOptimized}
-                  allocations={computedAllocations}
-                  checkingError={checkingError}
-                  vendors={vendors}
-                  onToggleChat={() => setIsChatOpen(!isChatOpen)}
-                  onNewSpecsFileAttached={handleNewSpecsFileAttached}
-                  targetedBudget={targetedBudget}
-                  setTargetedBudget={handleSetTargetedBudget}
-                  liveFeasibility={liveFeasibility}
-                  onToggleLiveFeasibility={handleToggleLiveFeasibility}
-                />
-              )}
+        {/* Tab contents wrapper */}
+        <div id="tab-viewport" className="w-full">
+          {activeTab === 'calculator' && (
+            <SpecsCalculator
+              pitches={pitches}
+              activeStrategy={activeStrategy}
+              onChangeStrategy={handleChangeStrategy}
+              onUpdatePitches={handleUpdatePitches}
+              savedOptions={savedOptions}
+              setSavedOptions={setSavedOptions}
+              hasChecked={hasChecked}
+              setHasChecked={setHasChecked}
+              isChecking={isChecking}
+              setIsChecking={setIsChecking}
+              isReloading={isReloading}
+              setIsReloading={setIsReloading}
+              onStartChecking={handleStartChecking}
+              onStartCheckingForOptions={handleStartCheckingForOptions}
+              onStartCheckingOptimized={handleStartCheckingOptimized}
+              allocations={computedAllocations}
+              checkingError={checkingError}
+              vendors={vendors}
+              onToggleChat={() => setIsChatOpen(!isChatOpen)}
+              onNewSpecsFileAttached={handleNewSpecsFileAttached}
+              targetedBudget={targetedBudget}
+              setTargetedBudget={handleSetTargetedBudget}
+              liveFeasibility={liveFeasibility}
+              onToggleLiveFeasibility={handleToggleLiveFeasibility}
+              insertedDatabase={insertedDatabase}
+              feasibilityFontSizeDelta={feasibilityFontSizeDelta}
+              onResetQuote={() => setShowResetDialog(true)}
+            />
+          )}
 
-              {activeTab === 'scenarios' && (
-                <DatabaseGrid
-                  pitches={pitches}
-                  activeStrategy={activeStrategy}
-                  onUpdatePitches={handleUpdatePitches}
-                  onResetToDefault={() => setShowResetDialog(true)}
-                  savedOptions={savedOptions}
-                  setSavedOptions={setSavedOptions}
-                  hasChecked={hasChecked}
-                  setHasChecked={setHasChecked}
-                  isChecking={isChecking}
-                  setIsChecking={setIsChecking}
-                  isReloading={isReloading}
-                  setIsReloading={setIsReloading}
-                  onStartChecking={handleStartChecking}
-                  onStartCheckingForOptions={handleStartCheckingForOptions}
-                  onStartCheckingOptimized={handleStartCheckingOptimized}
-                  allocations={computedAllocations}
-                  vendors={vendors}
-                  onUpdateVendors={setVendors}
-                  onNewSpecsFileAttached={handleNewSpecsFileAttached}
-                  insertedDatabase={insertedDatabase}
-                  targetedBudget={targetedBudget}
-                  feasibilityFontSizeDelta={feasibilityFontSizeDelta}
-                />
-              )}
+          {activeTab === 'scenarios' && (
+            <DatabaseGrid
+              pitches={pitches}
+              activeStrategy={activeStrategy}
+              onUpdatePitches={handleUpdatePitches}
+              onResetToDefault={() => setShowResetDialog(true)}
+              savedOptions={savedOptions}
+              setSavedOptions={setSavedOptions}
+              hasChecked={hasChecked}
+              setHasChecked={setHasChecked}
+              isChecking={isChecking}
+              setIsChecking={setIsChecking}
+              isReloading={isReloading}
+              setIsReloading={setIsReloading}
+              onStartChecking={handleStartChecking}
+              onStartCheckingForOptions={handleStartCheckingForOptions}
+              onStartCheckingOptimized={handleStartCheckingOptimized}
+              allocations={computedAllocations}
+              vendors={vendors}
+              onUpdateVendors={setVendors}
+              onNewSpecsFileAttached={handleNewSpecsFileAttached}
+              insertedDatabase={insertedDatabase}
+              targetedBudget={targetedBudget}
+              feasibilityFontSizeDelta={feasibilityFontSizeDelta}
+            />
+          )}
 
-              {activeTab === 'chat' && (
-                <ChatPane
-                  pitches={pitches}
-                  insertedDatabase={insertedDatabase}
-                  allocations={computedAllocations}
-                  activeStrategy={activeStrategy}
-                  vendors={vendors}
-                  onUpdatePitches={handleUpdatePitches}
-                  messages={chatMessages}
-                  setMessages={setChatMessages}
-                  onUpdateStrategy={handleChangeStrategy}
-                  isFloating={false}
-                />
-              )}
+          {activeTab === 'chat' && (
+            <ChatPane
+              pitches={pitches}
+              insertedDatabase={insertedDatabase}
+              allocations={computedAllocations}
+              activeStrategy={activeStrategy}
+              vendors={vendors}
+              onUpdatePitches={handleUpdatePitches}
+              messages={chatMessages}
+              setMessages={setChatMessages}
+              onUpdateStrategy={handleChangeStrategy}
+              isFloating={false}
+            />
+          )}
 
-              {activeTab === 'vendors' && (
-                <VendorManager
-                  vendors={vendors}
-                  onUpdateVendors={setVendors}
-                />
-              )}
-            </motion.div>
-          </AnimatePresence>
+          {activeTab === 'vendors' && (
+            <VendorManager
+              vendors={vendors}
+              onUpdateVendors={setVendors}
+            />
+          )}
         </div>
       </main>
 
@@ -1263,7 +1178,7 @@ export default function App() {
           allocations={computedAllocations}
           activeStrategy={activeStrategy}
           vendors={vendors}
-          onUpdatePitches={setPitches}
+          onUpdatePitches={handleUpdatePitches}
           messages={chatMessages}
           setMessages={setChatMessages}
           onUpdateStrategy={handleChangeStrategy}
@@ -1273,18 +1188,30 @@ export default function App() {
         />
       )}
 
-      {/* Global Reset pop-out modal */}
+      {/* Reset Quote pop-out modal */}
       {showResetDialog && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 animate-fade-in" id="global-reset-modal">
           <div className="bg-white rounded-xl border border-slate-200 shadow-2xl max-w-md w-full p-5 space-y-4">
             <div className="flex items-center gap-2.5 text-rose-600">
-              <Trash2 className="h-5 w-5" />
-              <h3 className="text-sm font-bold text-slate-900">Confirm Reset & Refresh All</h3>
+              <RotateCcw className="h-5 w-5" />
+              <h3 className="text-sm font-bold text-slate-900">Reset Quote Confirmation</h3>
             </div>
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              Are you sure you want to completely reset everything? This will clear all feasibility results, reset parameters, and remove any custom vendors added. If you have not saved, you will lose your data.
+              Are you sure you want to reset this quote? This will clear all audiences, set the budget to $0, and remove all existing lines so you can add rows manually or upload a new Excel file.
             </p>
+
+            <div className="space-y-2 border-t border-slate-100 pt-3">
+              <label className="text-[10px] text-slate-500 font-bold uppercase block">Save current interaction first (Optional)</label>
+              <input
+                type="text"
+                placeholder="e.g. Scenario Backup"
+                value={resetBackupName}
+                onChange={(e) => setResetBackupName(e.target.value)}
+                className="w-full text-xs bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
+              />
+              <p className="text-[10px] text-slate-400">If you want to save your current quote before resetting, enter a name above. Otherwise leave it blank.</p>
+            </div>
 
             {insertedDatabase && (
               <label className="flex items-start gap-2 text-xs text-slate-600 leading-relaxed cursor-pointer select-none">
@@ -1301,44 +1228,35 @@ export default function App() {
               </label>
             )}
 
-            <div className="space-y-2 border-t border-slate-100 pt-3">
-              <label className="text-[10px] text-slate-500 font-bold uppercase block">Would you like to save your current option first?</label>
-              <input
-                type="text"
-                placeholder="e.g. Saved Backup Option"
-                value={resetBackupName}
-                onChange={(e) => setResetBackupName(e.target.value)}
-                className="w-full text-xs bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
-              />
-              <p className="text-[10px] text-slate-400">If you want to save, type a name above. Otherwise leave it blank.</p>
-            </div>
-
-            <div className="flex justify-end gap-2 text-xs pt-1">
+            <div className="flex justify-end gap-2 text-xs pt-2 border-t border-slate-100">
               <button
+                type="button"
                 onClick={() => {
                   setShowResetDialog(false);
                   setResetBackupName('');
                   setResetAlsoDatabase(false);
                 }}
-                className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition font-bold cursor-pointer"
+                className="px-3.5 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition font-bold cursor-pointer"
               >
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={() => {
                   handleGlobalReset(false);
                 }}
-                className="px-3 py-1.5 rounded-lg border border-slate-200 text-rose-600 hover:bg-rose-50 transition font-bold cursor-pointer"
+                className="px-3.5 py-1.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 hover:bg-rose-100 transition font-bold cursor-pointer"
               >
-                Reset Without Saving
+                Reset Quote (Set to 0)
               </button>
               <button
+                type="button"
                 onClick={() => {
                   handleGlobalReset(true);
                 }}
                 className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition font-bold shadow-sm cursor-pointer"
               >
-                Save & Reset
+                Save &amp; Reset
               </button>
             </div>
           </div>
@@ -1457,6 +1375,8 @@ export default function App() {
             <p className="text-xs text-slate-600 leading-relaxed">
               Are you sure you want to run the feasibility optimization with your current custom manual adjustments (including edited panel blends, targeted budget constraints, and targeted CPIs)?
               <br/><br/>
+              Optimization will evaluate across all 43 available suppliers, following <strong>{allowSameLineTwice ? 'Feasibility for Options (reusing feasibility across scenarios)' : 'Feasibility for Targets (unique inventory per target)'}</strong> based on your previous check mode.
+              <br/><br/>
               If any target lines are unfeasible under your manual adjustments or exceed our targeted budget limit, they will automatically fall back to standard cost-optimized rules to ensure full feasibility.
             </p>
 
@@ -1472,7 +1392,7 @@ export default function App() {
               <button
                 onClick={async () => {
                   setShowOptimizedCheckDialog(false);
-                  await executeCheck(true, pitches);
+                  await executeCheck(true, pitches, false, allowSameLineTwice);
                 }}
                 className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition font-bold cursor-pointer"
               >

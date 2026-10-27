@@ -1,9 +1,20 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import { FeasibilityRow, AllocationResult, StrategyType, VendorTier } from '../types';
 import { calculateAllRows } from '../lib/calculator';
 import { safeStorage } from '../lib/storage';
 import { api, SavedOption } from '../lib/api';
-import { ALL_COUNTRIES } from '../data/countries';
+import { ALL_COUNTRIES, isValidCountry, getCanonicalCountryName } from '../data/countries';
+import ComboboxCell from './ComboboxCell';
+import {
+  GLOBAL_ALL_LOIS,
+  GLOBAL_ALL_IRS,
+  GLOBAL_ALL_UNIVERSES,
+  GLOBAL_ALL_QUOTAS,
+  ALL_DB_COUNTRIES,
+  getDbCountries,
+  getCountryPreExistingSpecs,
+  getCountrySpecsByUniverse
+} from '../data/attachedSpecsData';
 import { parseCSVToPitches } from '../lib/csvParser';
 import {
   FileCheck,
@@ -33,9 +44,13 @@ import {
   PlayCircle,
   FolderPlus,
   RefreshCw,
+  RotateCcw,
   Trash2,
   Sparkles,
-  Sliders
+  Sliders,
+  HelpCircle,
+  Database,
+  X
 } from 'lucide-react';
 
 interface SpecsCalculatorProps {
@@ -63,6 +78,51 @@ interface SpecsCalculatorProps {
   setTargetedBudget?: (val: number) => void;
   liveFeasibility: boolean;
   onToggleLiveFeasibility: () => void;
+  insertedDatabase?: any;
+  feasibilityFontSizeDelta?: number;
+  onResetQuote?: () => void;
+}
+
+function InstantTooltip({
+  text,
+  children,
+  position = 'bottom'
+}: {
+  text?: string;
+  children?: React.ReactNode;
+  position?: 'top' | 'bottom';
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  if (!text) return <>{children}</>;
+  return (
+    <span
+      className="relative inline-flex items-center cursor-help"
+      title={text}
+      onMouseEnter={() => setIsOpen(true)}
+      onMouseLeave={() => setIsOpen(false)}
+    >
+      {children}
+      {isOpen && (
+        <span
+          className={`pointer-events-none absolute z-[99999] flex flex-col ${
+            position === 'top'
+              ? 'bottom-full left-0 mb-1.5'
+              : 'top-full left-0 mt-1.5'
+          }`}
+          style={{ minWidth: '180px', maxWidth: '320px' }}
+        >
+          <span className="bg-slate-900 text-white text-[11px] font-sans font-medium px-2.5 py-1.5 rounded-md shadow-2xl border border-slate-700 whitespace-normal text-left leading-snug">
+            {text}
+          </span>
+          {position === 'top' ? (
+            <span className="w-1.5 h-1.5 bg-slate-900 rotate-45 -mt-1 ml-4 border-r border-b border-slate-700"></span>
+          ) : (
+            <span className="w-1.5 h-1.5 bg-slate-900 rotate-45 -mb-1 ml-4 order-first border-l border-t border-slate-700"></span>
+          )}
+        </span>
+      )}
+    </span>
+  );
 }
 
 export default function SpecsCalculator({
@@ -89,11 +149,30 @@ export default function SpecsCalculator({
   targetedBudget = 0,
   setTargetedBudget,
   liveFeasibility,
-  onToggleLiveFeasibility
+  onToggleLiveFeasibility,
+  insertedDatabase,
+  feasibilityFontSizeDelta = 0,
+  onResetQuote
 }: SpecsCalculatorProps) {
   const [exporting, setExporting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [isCheckDropdownOpen, setIsCheckDropdownOpen] = useState(false);
+  const setToastNotification = (_val: any) => {};
+  const [localBudgetInput, setLocalBudgetInput] = useState<string>(() => (targetedBudget && targetedBudget > 0 ? String(targetedBudget) : ''));
+
+  React.useEffect(() => {
+    setLocalBudgetInput(targetedBudget && targetedBudget > 0 ? String(targetedBudget) : '');
+  }, [targetedBudget]);
+
+  const handleCommitBudget = () => {
+    const raw = localBudgetInput.trim();
+    if (raw === '' || raw === '0') {
+      if (setTargetedBudget) setTargetedBudget(0);
+    } else {
+      const parsed = parseFloat(raw.replace(/[^0-9.]/g, '')) || 0;
+      if (setTargetedBudget) setTargetedBudget(parsed);
+    }
+  };
 
   // Sizable details collapsible settings with persistence
   const [showStats, setShowStats] = useState(() => {
@@ -120,6 +199,10 @@ export default function SpecsCalculator({
     const saved = safeStorage.getItem('hide_optimizer_widget');
     return saved === 'true' ? false : true;
   });
+
+  const activeDbCountries = useMemo(() => {
+    return getDbCountries(insertedDatabase);
+  }, [insertedDatabase]);
 
   const handleToggleStats = () => {
     const nextVal = !showStats;
@@ -164,12 +247,12 @@ export default function SpecsCalculator({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 1. Perform advanced calculations
-  const allocations = passedAllocations || calculateAllRows(pitches, activeStrategy, vendors);
+  const allocations = useMemo(() => passedAllocations || calculateAllRows(pitches, activeStrategy, vendors), [passedAllocations, pitches, activeStrategy, vendors]);
 
   // 2. Perform alternative strategies for comparative dashboards
-  const costAllocations = calculateAllRows(pitches, 'cost', vendors);
-  const tierAllocations = calculateAllRows(pitches, 'tier', vendors);
-  const noInternalAllocations = calculateAllRows(pitches, 'no-internal-cost', vendors);
+  const costAllocations = useMemo(() => calculateAllRows(pitches, 'cost', vendors), [pitches, vendors]);
+  const tierAllocations = useMemo(() => calculateAllRows(pitches, 'tier', vendors), [pitches, vendors]);
+  const noInternalAllocations = useMemo(() => calculateAllRows(pitches, 'no-internal-cost', vendors), [pitches, vendors]);
 
   // Compute key summary figures
   const totalTargetSample = pitches.reduce((sum, p) => sum + p.totalSampleSize, 0);
@@ -217,7 +300,11 @@ export default function SpecsCalculator({
       option: `${original.option} (Copy)`,
     };
 
-    onUpdatePitches([...pitches, duplicateRow]);
+    onUpdatePitches([...pitches, duplicateRow], true);
+    setToastNotification({
+      message: `Duplicated audience line "${original.option}" to bottom.`,
+      type: 'success'
+    });
   };
 
   // Add a new blank specification line
@@ -255,21 +342,37 @@ export default function SpecsCalculator({
       comparability: 'High'
     };
 
-    onUpdatePitches([...pitches, newRow]);
+    onUpdatePitches([...pitches, newRow], true);
+    setToastNotification({
+      message: `Added new audience line #${pitches.length + 1} to bottom.`,
+      type: 'success'
+    });
   };
 
   // 1. Clear current specs
   const handleClearSpecs = () => {
-    if (confirm("Are you sure you want to clear all the specs? Data will be lost.")) {
-      onUpdatePitches([]);
-      setHasChecked(false);
+    if (pitches.length === 0) {
+      setToastNotification({
+        message: 'Specification list is already empty.',
+        type: 'info'
+      });
+      return;
     }
+    onUpdatePitches([]);
+    setHasChecked(false);
+    setToastNotification({
+      message: 'Cleared all specifications.',
+      type: 'info'
+    });
   };
 
   // 4. Trigger Save dialog with choice options
   const handleSaveCurrentOption = () => {
     if (pitches.length === 0) {
-      alert("There are no specifications currently loaded to be saved.");
+      setToastNotification({
+        message: "There are no specifications currently loaded to be saved.",
+        type: 'info'
+      });
       return;
     }
 
@@ -277,7 +380,7 @@ export default function SpecsCalculator({
     setNewSaveName(defaultName);
     // Pick up options saved by colleagues since this page was loaded
     api.listSavedOptions().then(setSavedOptions).catch((err) => console.warn('Could not refresh saved options:', err));
-    setSaveMode(savedOptions.length > 0 ? 'create' : 'create'); // default to create new or override
+    setSaveMode('create');
     setSelectedOverrideId(savedOptions[0]?.id || '');
     setShowSaveDialog(true);
   };
@@ -296,22 +399,17 @@ export default function SpecsCalculator({
     if (saveMode === 'create') {
       const finalName = newSaveName.trim() || `Scenario Option ${savedOptions.length + 1}`;
 
-      // Prevent duplicate names in create mode simply
-      const nameExists = savedOptions.some(o => o.name.toLowerCase() === finalName.toLowerCase());
-      if (nameExists && savedOptions.length > 0) {
-        if (!confirm(`An option named "${finalName}" already exists. Do you want to overwrite it instead?`)) {
-          return;
-        }
-        // convert to override
-        const target = savedOptions.find(o => o.name.toLowerCase() === finalName.toLowerCase());
-        if (target) {
-          const overwritten = { ...target, timestamp: nowStamp(), data: JSON.parse(JSON.stringify(pitches)) };
-          await api.updateSavedOption(overwritten);
-          setSavedOptions(savedOptions.map(opt => opt.id === target.id ? overwritten : opt));
-          setShowSaveDialog(false);
-          alert(`Option "${finalName}" successfully overwritten!`);
-          return;
-        }
+      const target = savedOptions.find(o => o.name.toLowerCase() === finalName.toLowerCase());
+      if (target) {
+        const overwritten = { ...target, timestamp: nowStamp(), data: JSON.parse(JSON.stringify(pitches)) };
+        await api.updateSavedOption(overwritten);
+        setSavedOptions(savedOptions.map(opt => opt.id === target.id ? overwritten : opt));
+        setShowSaveDialog(false);
+        setToastNotification({
+          message: `Option "${finalName}" successfully overwritten!`,
+          type: 'success'
+        });
+        return;
       }
 
       const newSaved = {
@@ -322,11 +420,16 @@ export default function SpecsCalculator({
       };
       await api.createSavedOption(newSaved);
       setSavedOptions([...savedOptions, newSaved]);
-      alert(`Option "${finalName}" saved successfully!`);
+      setToastNotification({
+        message: `Option "${finalName}" saved successfully!`,
+        type: 'success'
+      });
     } else {
-      // override mode
       if (!selectedOverrideId) {
-        alert("Please select a saved option target to override.");
+        setToastNotification({
+          message: "Please select a saved option target to override.",
+          type: 'error'
+        });
         return;
       }
       const targetOpt = savedOptions.find(o => o.id === selectedOverrideId);
@@ -336,7 +439,10 @@ export default function SpecsCalculator({
         await api.updateSavedOption(overridden);
         setSavedOptions(savedOptions.map(opt => opt.id === selectedOverrideId ? overridden : opt));
       }
-      alert(`Option "${name}" overridden successfully!`);
+      setToastNotification({
+        message: `Option "${name}" overridden successfully!`,
+        type: 'success'
+      });
     }
     setShowSaveDialog(false);
   };
@@ -485,7 +591,10 @@ export default function SpecsCalculator({
             }
           }
         } catch (err: any) {
-          alert(`Error uploading file: ${err.message || err}`);
+          setToastNotification({
+            message: `Error uploading file: ${err.message || err}`,
+            type: 'error'
+          });
         }
       };
       reader.readAsText(e.target.files[0]);
@@ -560,6 +669,52 @@ export default function SpecsCalculator({
     setEditingCell(null);
   };
 
+  const handleCellSave = (rowId: string, field: keyof FeasibilityRow, rawVal: string) => {
+    const updated = pitches.map((pitch) => {
+      if (pitch.id === rowId) {
+        let value: any = rawVal;
+        const lower = String(rawVal || '').trim().toLowerCase();
+
+        if (field === 'market') {
+          if (lower.startsWith('insert') || lower === '') {
+            value = '';
+          } else {
+            value = getCanonicalCountryName(rawVal) || rawVal.trim();
+          }
+        } else if (field === 'irPercent') {
+          if (lower.startsWith('insert') || lower === '' || lower === 'none' || lower === '0' || lower === '0%') {
+            value = 0;
+          } else {
+            let num = parseFloat(rawVal.replace('%', '').trim());
+            if (isNaN(num)) num = 0;
+            value = num > 1 ? num / 100 : num;
+          }
+        } else if (field === 'loi') {
+          if (lower.startsWith('insert') || lower === '' || lower === 'none' || lower === '0') {
+            value = 0;
+          } else {
+            value = parseFloat(rawVal.replace(/[^0-9.-]/g, '')) || 0;
+          }
+        } else if (field === 'irUniverse') {
+          if (lower.startsWith('insert') || lower === '' || lower === 'none') {
+            value = '';
+          } else {
+            value = rawVal.trim();
+          }
+        } else if (field === 'quotas') {
+          if (lower.startsWith('insert') || lower === '') {
+            value = 'No quotas';
+          } else {
+            value = rawVal.trim();
+          }
+        }
+        return { ...pitch, [field]: value };
+      }
+      return pitch;
+    });
+    onUpdatePitches(updated);
+  };
+
   const handleToggleLockRow = (rowId: string) => {
     const updated = pitches.map(p => {
       if (p.id === rowId) {
@@ -582,16 +737,23 @@ export default function SpecsCalculator({
   const handleDeleteRow = (id: string) => {
     const target = pitches.find(p => p.id === id);
     if (target && target.isLocked) {
-      alert("This line is locked and cannot be deleted!");
+      setToastNotification({
+        message: `Audience row "${target.option}" is locked. Click the lock icon to unlock it first.`,
+        type: 'info'
+      });
       return;
     }
-    const ok = window.confirm("Are you sure you want to delete this option specs line?");
-    if (!ok) return;
-    onUpdatePitches(pitches.filter(p => p.id !== id));
+    const remaining = pitches.filter(p => p.id !== id);
+    onUpdatePitches(remaining, true);
+    setToastNotification({
+      message: `Audience line deleted (${remaining.length} remaining).`,
+      type: 'info'
+    });
   };
 
   return (
     <div className="space-y-4" id="specs-calculations-root">
+
 
       {/* 1. Header Widget with quick specs import */}
       <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm" id="procurement-optimizer-main-header">
@@ -634,15 +796,15 @@ export default function SpecsCalculator({
                 Insert Specs
               </button>
 
-              {/* Add Line */}
+              {/* Add Audience */}
               <button
                 onClick={handleAddLine}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-800 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition shadow-sm cursor-pointer"
                 id="add-line-calc-tab-btn"
-                title="Add a new blank specification line"
+                title="Add a new audience specification line at the bottom of the table"
               >
                 <Plus className="h-3.5 w-3.5 text-emerald-600" />
-                Add Line
+                Add Audience
               </button>
             </div>
 
@@ -747,6 +909,20 @@ export default function SpecsCalculator({
               Save
             </button>
 
+            {/* Reset Quote */}
+            {onResetQuote && (
+              <button
+                type="button"
+                onClick={onResetQuote}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 transition shadow-sm cursor-pointer"
+                id="reset-quote-calc-btn"
+                title="Reset Quote: clear all audiences, set budget to 0, and clear all lines"
+              >
+                <RotateCcw className="h-3.5 w-3.5 text-rose-600" />
+                Reset Quote
+              </button>
+            )}
+
             <button
               onClick={handleToggleOptimizer}
               className="p-1 hover:bg-slate-100 text-slate-400 hover:text-slate-700 rounded-lg transition-all duration-150 cursor-pointer hidden lg:block"
@@ -810,14 +986,16 @@ export default function SpecsCalculator({
                     <input
                       type="text"
                       placeholder="budget"
-                      value={targetedBudget > 0 ? targetedBudget : ''}
-                      onChange={(e) => {
-                        const parsed = parseFloat(e.target.value.replace(/[^0-9.]/g, '')) || 0;
-                        if (setTargetedBudget) {
-                          setTargetedBudget(parsed);
+                      value={localBudgetInput}
+                      onChange={(e) => setLocalBudgetInput(e.target.value)}
+                      onBlur={handleCommitBudget}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleCommitBudget();
+                          (e.target as HTMLInputElement).blur();
                         }
                       }}
-                      className="w-14 pl-3 pr-1 py-0.5 text-[10px] font-mono font-bold border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-[#2b6cb0] bg-white text-slate-800"
+                      className="w-16 pl-3 pr-1 py-0.5 text-[10px] font-mono font-bold border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-[#2b6cb0] bg-white text-slate-800"
                     />
                   </div>
                 </div>
@@ -1056,9 +1234,12 @@ export default function SpecsCalculator({
             </button>
           </div>
         )}
-        {/* Output table layout */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
+        {/* Output table layout with overflow-x-auto padding to prevent dropdown clipping */}
+        <div className="overflow-x-auto pb-44 min-h-[360px]">
+          <table
+            className="w-full text-left border-collapse text-xs dynamic-feasibility-grid"
+            style={{ '--grid-font-size': `${12 + (feasibilityFontSizeDelta || 0) * 1.5}px` } as React.CSSProperties}
+          >
             <thead>
               <tr className="bg-slate-50 text-slate-600 border-b border-slate-100 font-semibold uppercase tracking-wider text-[10px]">
                 <th className="p-2 col-static">Country</th>
@@ -1070,6 +1251,7 @@ export default function SpecsCalculator({
                 <th className="p-2 col-static">Feasibility Status</th>
                 <th className="p-2 col-output text-right text-[#2b6cb0]">feasible</th>
                 <th className="p-2 col-output text-right text-rose-700">missing</th>
+                <th className="p-2 col-output text-right text-rose-600 font-bold" title="Missing sample as a percentage of target size">missing %</th>
 
                 {/* NEW REQUIRED COLUMNS */}
                 <th className="p-2 col-output text-right text-[#205080]" title="Un-penalized Specs Potential Max limit">max feasible</th>
@@ -1085,7 +1267,20 @@ export default function SpecsCalculator({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 bg-white">
-              {pitches.map((pitch) => {
+              {pitches.length === 0 ? (
+                <tr>
+                  <td colSpan={25} className="p-8 text-center text-slate-500 bg-slate-50/20">
+                    <div className="flex flex-col items-center justify-center gap-2 max-w-md mx-auto">
+                      <Database className="h-8 w-8 text-slate-400" />
+                      <span className="font-bold text-slate-700 text-sm">No specifications loaded in quote</span>
+                      <span className="text-xs text-slate-500">
+                        Go to <strong>Manage Scenario Specifications</strong> to add lines manually, upload an Excel file, or use the <strong>Chat Assistant</strong> to add specs.
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                pitches.map((pitch) => {
                 const alloc = allocations.find(a => a.rowId === pitch.id) || {
                   status: 'Unfeasible',
                   allocatedInternal: 0,
@@ -1116,34 +1311,67 @@ export default function SpecsCalculator({
                 const isEditingSalesCpi = editingCell?.rowId === pitch.id && editingCell?.field === 'salesCpi';
                 const isEditingComp = editingCell?.rowId === pitch.id && editingCell?.field === 'comparability';
 
+                const pitchSpecs = getCountrySpecsByUniverse(pitch.market, pitch.irUniverse, insertedDatabase);
+
+                // Informative helper indicating why a row has deficit / 0 allocation / unfilled status
+                const getUnfeasibleReason = (p: FeasibilityRow, specs: any): string => {
+                  if (!p.market || !isValidCountry(p.market) || String(p.market).startsWith('Insert')) {
+                    return 'Missing or invalid country';
+                  }
+                  if (!p.irPercent || p.irPercent <= 0 || String(p.irPercent).toLowerCase().startsWith('insert')) {
+                    return 'Missing: Incidence (IR%)';
+                  }
+                  if (!p.loi || p.loi <= 0 || String(p.loi).toLowerCase().startsWith('insert')) {
+                    return 'Missing: Duration (LOI)';
+                  }
+                  if (!p.irUniverse || String(p.irUniverse).trim() === '' || String(p.irUniverse).toLowerCase().startsWith('insert')) {
+                    return 'Missing: Universe (IR universe)';
+                  }
+                  if (specs.preExistingUniverses && specs.preExistingUniverses.length > 0) {
+                    const cleanUniverse = p.irUniverse.toLowerCase().trim();
+                    const exists = specs.preExistingUniverses.some((u: string) => u.toLowerCase().trim() === cleanUniverse);
+                    if (!exists) {
+                      return 'Universe not found in database for this country';
+                    }
+                  }
+                  const totalCap = (p.internal || 0) + (p.vendor1 || 0) + (p.vendor2 || 0) + (p.vendor3 || 0) + (p.vendor4 || 0);
+                  if (totalCap === 0) {
+                    return 'Capacity is 0 in database for specified parameters';
+                  }
+                  if (p.totalSampleSize <= 0) {
+                    return 'Missing: Target Sample Size';
+                  }
+                  return 'Incomplete feasibility / No vendor covers demand';
+                };
+
+                const unfeasibleReason = getUnfeasibleReason(pitch, pitchSpecs);
+
                 return (
                   <tr key={pitch.id} className="hover:bg-slate-50/55 transition text-[11px] group">
-                    {/* Country edit */}
+                    {/* Country edit with Autocomplete combobox */}
                     <td className="p-2 col-static text-slate-800 font-bold">
-                      {editingCell?.rowId === pitch.id && editingCell?.field === 'market' ? (
-                        <input
-                          type="text"
-                          value={tempEditValue}
-                          onChange={(e) => setTempEditValue(e.target.value)}
-                          onBlur={saveInlineEdit}
-                          onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
-                          autoFocus
-                          list="country-datalist"
-                          className="px-1 border border-[#2b6cb0] rounded-md bg-white text-slate-800 w-full"
-                        />
-                      ) : (
-                        <span
-                          onDoubleClick={() => startEditing(pitch.id, 'market', pitch.market)}
-                          className="cursor-pointer border-b border-dashed border-slate-200 hover:border-slate-800 font-bold text-slate-900 inline-block min-w-[70px] min-h-[1.5em] align-middle select-none"
-                          title="Double click to edit country"
-                        >
-                          {String(pitch.market || '').trim() || (
-                            <span className="text-slate-400 italic font-normal text-[10px] bg-slate-50 px-1.5 py-0.5 rounded border border-slate-150">
-                              (Empty)
+                      <ComboboxCell
+                        value={pitch.market}
+                        onSave={(val) => handleCellSave(pitch.id, 'market', val)}
+                        options={ALL_COUNTRIES}
+                        preExistingOptions={activeDbCountries}
+                        specType="country"
+                        placeholder="Insert country"
+                        displayValue={
+                          <div className="flex items-center gap-1.5">
+                            <span className={isValidCountry(pitch.market) ? 'text-slate-900 font-bold' : 'text-slate-400 italic font-normal'}>
+                              {getCanonicalCountryName(pitch.market) || pitch.market || 'Insert country'}
                             </span>
-                          )}
-                        </span>
-                      )}
+                            {!isValidCountry(pitch.market) && pitch.market && (
+                              <span className="text-[9px] font-bold text-rose-600 bg-rose-100 px-1 py-0.2 rounded border border-rose-200 uppercase tracking-tight shrink-0" title="Unrecognized country: 0 output">
+                                0 output
+                              </span>
+                            )}
+                          </div>
+                        }
+                        align="left"
+                        widthClass="w-36"
+                      />
                     </td>
 
                     {/* Target Size */}
@@ -1160,6 +1388,7 @@ export default function SpecsCalculator({
                         />
                       ) : (
                         <span
+                          onClick={() => startEditing(pitch.id, 'totalSampleSize', pitch.totalSampleSize)}
                           onDoubleClick={() => startEditing(pitch.id, 'totalSampleSize', pitch.totalSampleSize)}
                           className="cursor-pointer border-b border-dashed border-slate-200 hover:border-slate-800"
                         >
@@ -1168,150 +1397,172 @@ export default function SpecsCalculator({
                       )}
                     </td>
 
-                    {/* LOI */}
+                    {/* LOI (Editable combobox with 1..100 range, green DB ones, grey others) */}
                     <td className="p-2 col-static font-mono text-center">
-                      {editingCell?.rowId === pitch.id && editingCell?.field === 'loi' ? (
-                        <input
-                          type="text"
-                          value={tempEditValue}
-                          onChange={(e) => setTempEditValue(e.target.value)}
-                          onBlur={saveInlineEdit}
-                          onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
-                          autoFocus
-                          className="w-12 px-1 text-center border border-[#2b6cb0] rounded-md bg-white text-slate-930 font-sans"
-                        />
-                      ) : (
-                        <span
-                          onDoubleClick={() => startEditing(pitch.id, 'loi', pitch.loi)}
-                          className="cursor-pointer border-b border-dashed border-slate-200 hover:border-slate-800"
-                        >
-                          {pitch.loi}m
-                        </span>
-                      )}
+                      <ComboboxCell
+                        value={pitch.loi && pitch.loi > 0 ? pitch.loi : ''}
+                        onSave={(val) => handleCellSave(pitch.id, 'loi', val)}
+                        options={pitchSpecs.loiDropdownOptions}
+                        preExistingOptions={pitchSpecs.preExistingLois}
+                        specType="loi"
+                        placeholder="Insert LOI"
+                        displayValue={pitch.loi && pitch.loi > 0 ? `${pitch.loi}m` : undefined}
+                        align="center"
+                        widthClass="w-20"
+                      />
                     </td>
 
-                    {/* IR% */}
+                    {/* IR% (Editable combobox with 1%..100% range, green DB ones, grey others) */}
                     <td className="p-2 col-static font-mono text-center font-bold text-emerald-950">
-                      {editingCell?.rowId === pitch.id && editingCell?.field === 'irPercent' ? (
-                        <input
-                          type="text"
-                          value={tempEditValue}
-                          onChange={(e) => setTempEditValue(e.target.value)}
-                          onBlur={saveInlineEdit}
-                          onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
-                          autoFocus
-                          className="w-12 px-1 text-center border border-[#2b6cb0] rounded-md bg-white text-slate-935 font-sans font-bold"
-                        />
-                      ) : (
-                        <span
-                          onDoubleClick={() => startEditing(pitch.id, 'irPercent', (pitch.irPercent * 100).toFixed(0) + '%')}
-                          className="cursor-pointer border-b border-dashed border-slate-200 hover:border-slate-800"
-                        >
-                          {(pitch.irPercent * 100).toFixed(0)}%
-                        </span>
-                      )}
+                      <ComboboxCell
+                        value={pitch.irPercent && pitch.irPercent > 0 ? `${Math.round(pitch.irPercent * 100)}%` : ''}
+                        onSave={(val) => handleCellSave(pitch.id, 'irPercent', val)}
+                        options={pitchSpecs.irDropdownOptions}
+                        preExistingOptions={pitchSpecs.preExistingIrs}
+                        specType="ir"
+                        placeholder="Insert incidence"
+                        displayValue={pitch.irPercent && pitch.irPercent > 0 ? `${Math.round(pitch.irPercent * 100)}%` : undefined}
+                        align="center"
+                        widthClass="w-20"
+                      />
                     </td>
 
-                    {/* IR Universe */}
-                    <td className="p-2 col-static font-medium text-slate-750 truncate max-w-[100px]" title={pitch.irUniverse}>
-                      {editingCell?.rowId === pitch.id && editingCell?.field === 'irUniverse' ? (
-                        <input
-                          type="text"
-                          value={tempEditValue}
-                          onChange={(e) => setTempEditValue(e.target.value)}
-                          onBlur={saveInlineEdit}
-                          onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
-                          autoFocus
-                          className="w-20 px-1 border border-[#2b6cb0] rounded-md bg-white text-slate-800 font-sans font-normal"
-                        />
-                      ) : (
-                        <span
-                          onDoubleClick={() => startEditing(pitch.id, 'irUniverse', pitch.irUniverse)}
-                          className="cursor-pointer border-b border-dashed border-slate-200 hover:border-slate-800"
-                        >
-                          {pitch.irUniverse}
-                        </span>
-                      )}
+                    {/* IR Universe (Editable combobox with country variables) */}
+                    <td className="p-2 col-static font-medium text-slate-750 max-w-[130px]" title={pitch.irUniverse}>
+                      <ComboboxCell
+                        value={pitch.irUniverse}
+                        onSave={(val) => handleCellSave(pitch.id, 'irUniverse', val)}
+                        options={pitchSpecs.universeDropdownOptions}
+                        preExistingOptions={pitchSpecs.preExistingUniverses}
+                        specType="universe"
+                        placeholder="Insert universe"
+                        displayValue={pitch.irUniverse ? <span className="truncate max-w-[110px] inline-block align-middle">{pitch.irUniverse}</span> : undefined}
+                        align="left"
+                        widthClass="w-40"
+                      />
                     </td>
 
-                    {/* Quotas */}
-                    <td className="p-2 col-static text-slate-600 truncate max-w-[130px]" title={pitch.quotas}>
-                      {editingCell?.rowId === pitch.id && editingCell?.field === 'quotas' ? (
-                        <input
-                          type="text"
-                          value={tempEditValue}
-                          onChange={(e) => setTempEditValue(e.target.value)}
-                          onBlur={saveInlineEdit}
-                          onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
-                          autoFocus
-                          className="w-28 px-1 border border-[#2b6cb0] rounded-md bg-white text-slate-800 font-sans font-normal"
-                        />
-                      ) : (
-                        <span
-                          onDoubleClick={() => startEditing(pitch.id, 'quotas', pitch.quotas)}
-                          className="cursor-pointer border-b border-dashed border-slate-200 hover:border-slate-800"
-                        >
-                          {pitch.quotas || 'No Quotas'}
-                        </span>
-                      )}
+                    {/* Quotas (Editable combobox with available quotas & No quotas) */}
+                    <td className="p-2 col-static text-slate-600 max-w-[150px]" title={pitch.quotas}>
+                      <ComboboxCell
+                        value={pitch.quotas || 'No quotas'}
+                        onSave={(val) => handleCellSave(pitch.id, 'quotas', val)}
+                        options={pitchSpecs.quotaDropdownOptions}
+                        preExistingOptions={pitchSpecs.preExistingQuotas}
+                        specType="quota"
+                        placeholder="Insert quotas"
+                        displayValue={pitch.quotas ? <span className="truncate max-w-[130px] inline-block align-middle">{pitch.quotas}</span> : undefined}
+                        align="left"
+                        widthClass="w-44"
+                      />
                     </td>
 
                     <td className="p-2 col-static">
                       {alloc.status === 'Fully Feasible' ? (
                         <div className="flex flex-col gap-0.5">
-                          <span className="inline-flex items-center gap-1 text-[9px] font-bold text-emerald-800 bg-emerald-100/80 px-1.5 py-0.5 rounded border border-emerald-200 w-fit">
-                            <CheckCircle2 className="h-2.5 w-2.5" />
-                            Secured
-                          </span>
-                          {alloc.overlapPenaltyPct > 0 && (
-                            <span className="text-[9px] text-amber-700 font-bold">
-                              -{alloc.overlapPenaltyPct}% Overlap
+                          <InstantTooltip text={alloc.overlapPenaltyPct > 0 ? `Fully feasible (100% covered) with -${alloc.overlapPenaltyPct}% overlap deduplication applied` : 'Fully feasible (100% covered)'}>
+                            <span className="inline-flex items-center gap-1 text-[9px] font-bold text-emerald-800 bg-emerald-100/80 px-1.5 py-0.5 rounded border border-emerald-200 w-fit cursor-help">
+                              <CheckCircle2 className="h-2.5 w-2.5 text-emerald-600" />
+                              Secured
                             </span>
+                          </InstantTooltip>
+                          {alloc.overlapPenaltyPct > 0 && (
+                            <InstantTooltip text={`Applied -${alloc.overlapPenaltyPct}% cross-panel deduplication friction across ${alloc.numVendorsUsed} active vendors.`}>
+                              <span className="text-[9px] text-amber-700 font-bold cursor-help">
+                                -{alloc.overlapPenaltyPct}% Overlap
+                              </span>
+                            </InstantTooltip>
                           )}
                         </div>
                       ) : alloc.status === 'Oversample' ? (
                         <div className="flex flex-col gap-0.5">
-                          <span className="inline-flex items-center gap-1 text-[9px] font-bold text-purple-800 bg-purple-100/80 px-1.5 py-0.5 rounded border border-purple-200 w-fit">
-                            <CheckCircle2 className="h-2.5 w-2.5" />
-                            Oversample
-                          </span>
-                          {alloc.overlapPenaltyPct > 0 && (
-                            <span className="text-[9px] text-amber-700 font-bold">
-                              -{alloc.overlapPenaltyPct}% Overlap
+                          <InstantTooltip text="Oversample available in database exceeding 100% target requirement">
+                            <span className="inline-flex items-center gap-1 text-[9px] font-bold text-purple-800 bg-purple-100/80 px-1.5 py-0.5 rounded border border-purple-200 w-fit cursor-help">
+                              <CheckCircle2 className="h-2.5 w-2.5" />
+                              Oversample
                             </span>
+                          </InstantTooltip>
+                          {alloc.overlapPenaltyPct > 0 && (
+                            <InstantTooltip text={`Applied -${alloc.overlapPenaltyPct}% cross-panel deduplication friction across ${alloc.numVendorsUsed} active vendors.`}>
+                              <span className="text-[9px] text-amber-700 font-bold cursor-help">
+                                -{alloc.overlapPenaltyPct}% Overlap
+                              </span>
+                            </InstantTooltip>
                           )}
                         </div>
                       ) : alloc.status === 'Partially Feasible' ? (
                         <div className="flex flex-col gap-0.5">
-                          <span className="inline-flex items-center gap-1 text-[9px] font-bold text-amber-800 bg-amber-100/85 px-1.5 py-0.5 rounded border border-amber-200 w-fit">
-                            <AlertCircle className="h-2.5 w-2.5" />
-                            Deficit (-{alloc.unfilledSample})
-                          </span>
-                          {alloc.overlapPenaltyPct > 0 && (
-                            <span className="text-[9px] text-amber-700 font-bold">
-                              -{alloc.overlapPenaltyPct}% Overlap
+                          <InstantTooltip text={`Deficit (-${alloc.unfilledSample.toLocaleString()} sample): ${unfeasibleReason}`}>
+                            <span
+                              className="inline-flex items-center gap-1 text-[9px] font-bold text-amber-800 bg-amber-100/85 px-1.5 py-0.5 rounded border border-amber-200 w-fit cursor-help shadow-2xs"
+                              title={`Deficit (-${alloc.unfilledSample}): ${unfeasibleReason}`}
+                            >
+                              <AlertCircle className="h-2.5 w-2.5" />
+                              Deficit (-{alloc.unfilledSample.toLocaleString()})
+                              <HelpCircle className="h-2 w-2 opacity-60 ml-0.5" />
                             </span>
+                          </InstantTooltip>
+                          {alloc.overlapPenaltyPct > 0 && (
+                            <InstantTooltip text={`Applied -${alloc.overlapPenaltyPct}% cross-panel deduplication friction across ${alloc.numVendorsUsed} active vendors.`}>
+                              <span className="text-[9px] text-amber-700 font-bold cursor-help">
+                                -{alloc.overlapPenaltyPct}% Overlap
+                              </span>
+                            </InstantTooltip>
                           )}
                         </div>
                       ) : (
-                        <span className="inline-flex items-center gap-1 text-[9px] font-bold text-rose-800 bg-rose-100/80 px-1.5 py-0.5 rounded border border-rose-200 w-fit">
-                          <XCircle className="h-2.5 w-2.5" />
-                          Unfilled
-                        </span>
+                        <InstantTooltip text={`Unfilled (0 feasible): ${unfeasibleReason}`}>
+                          <span
+                            className="inline-flex items-center gap-1 text-[9px] font-bold text-rose-800 bg-rose-100/80 px-1.5 py-0.5 rounded border border-rose-200 w-fit cursor-help shadow-2xs"
+                            title={unfeasibleReason}
+                          >
+                            <XCircle className="h-2.5 w-2.5" />
+                            Unfilled
+                            <HelpCircle className="h-2.5 w-2.5 opacity-70 ml-0.5 text-rose-700" />
+                          </span>
+                        </InstantTooltip>
                       )}
                     </td>
 
-                    {/* Removed redundant Target column since it is now right after Country */}
-
                     {/* Allocated totals and deficits */}
-                    <td className={`p-2 text-right font-mono font-bold col-output ${
-                      alloc.status === 'Oversample' ? 'text-purple-750' : 'text-[#2b6cb0]'
-                    }`}>
-                      {alloc.totalAllocated.toLocaleString()}
+                    <td
+                      className={`p-2 text-right font-mono font-bold col-output ${
+                        alloc.status === 'Oversample' ? 'text-purple-750' : 'text-[#2b6cb0]'
+                      } ${alloc.totalAllocated === 0 ? 'cursor-help' : ''}`}
+                    >
+                      {alloc.totalAllocated === 0 ? (
+                        <InstantTooltip text={`0 feasible: ${unfeasibleReason}`}>
+                          <span className="inline-flex items-center gap-1 justify-end text-rose-500 font-bold cursor-help" title={unfeasibleReason}>
+                            0
+                            <HelpCircle className="h-2.5 w-2.5 opacity-60 text-rose-400" />
+                          </span>
+                        </InstantTooltip>
+                      ) : (
+                        alloc.totalAllocated.toLocaleString()
+                      )}
                     </td>
 
-                    <td className={`p-2 text-right font-mono ${alloc.unfilledSample > 0 ? 'text-rose-600 font-bold' : 'text-slate-400'} col-output`}>
-                      {alloc.unfilledSample > 0 ? alloc.unfilledSample.toLocaleString() : '0'}
+                    <td
+                      className={`p-2 text-right font-mono ${alloc.unfilledSample > 0 ? 'text-rose-600 font-bold cursor-help' : 'text-slate-400'} col-output`}
+                    >
+                      {alloc.unfilledSample > 0 ? (
+                        <InstantTooltip text={`Deficit (-${alloc.unfilledSample.toLocaleString()} sample): ${unfeasibleReason}`}>
+                          <span className="inline-flex items-center gap-1 justify-end cursor-help" title={unfeasibleReason}>
+                            {alloc.unfilledSample.toLocaleString()}
+                            <HelpCircle className="h-2.5 w-2.5 opacity-60 text-rose-500" />
+                          </span>
+                        </InstantTooltip>
+                      ) : (
+                        '0'
+                      )}
+                    </td>
+
+                    {/* Missing % */}
+                    <td
+                      className={`p-2 text-right font-mono ${alloc.unfilledSample > 0 ? 'text-rose-600 font-bold' : 'text-slate-400'} col-output`}
+                      title={alloc.unfilledSample > 0 ? `${pitch.totalSampleSize > 0 ? Math.round((alloc.unfilledSample / pitch.totalSampleSize) * 100) : 0}% deficit` : '0% missing'}
+                    >
+                      {pitch.totalSampleSize > 0 ? `${Math.round((alloc.unfilledSample / pitch.totalSampleSize) * 100)}%` : '0%'}
                     </td>
 
                     {/* NEW METRICS ON THE RIGHT */}
@@ -1321,10 +1572,43 @@ export default function SpecsCalculator({
                     </td>
 
                     {/* 2. Internal / External Share */}
-                    <td className="p-2 text-center font-mono text-slate-700 col-output">
-                      <span className="font-semibold text-indigo-700">{alloc.internalSharePct}%</span>
-                      <span className="text-slate-300 mx-1">/</span>
-                      <span className="font-semibold text-emerald-700">{alloc.externalSharePct}%</span>
+                    <td
+                      className="p-2 text-center font-mono text-slate-700 col-output cursor-pointer hover:bg-amber-50"
+                      onClick={() => {
+                        if (editingCell?.rowId === pitch.id && editingCell?.field === 'internalPctOverride') return;
+                        const defaultVal = pitch.internalPctOverride !== undefined ? pitch.internalPctOverride : (alloc.internalSharePct || 0);
+                        startEditing(pitch.id, 'internalPctOverride', defaultVal);
+                      }}
+                      onDoubleClick={() => {
+                        const defaultVal = pitch.internalPctOverride !== undefined ? pitch.internalPctOverride : (alloc.internalSharePct || 0);
+                        startEditing(pitch.id, 'internalPctOverride', defaultVal);
+                      }}
+                      title="Click or double click to set custom % internal share override (0-100%). Clear or 'auto' to reset."
+                    >
+                      {editingCell?.rowId === pitch.id && editingCell?.field === 'internalPctOverride' ? (
+                        <div className="flex items-center justify-center gap-1" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="text"
+                            value={tempEditValue}
+                            onChange={(e) => setTempEditValue(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            onBlur={saveInlineEdit}
+                            onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
+                            autoFocus
+                            placeholder="auto"
+                            className="w-12 text-center border border-[#2b6cb0] rounded bg-white text-slate-900 font-bold text-xs py-0.5"
+                          />
+                          <span className="text-xs text-slate-500 font-bold">%</span>
+                        </div>
+                      ) : (
+                        <div className="inline-flex items-center justify-center">
+                          <span className={`font-semibold text-indigo-700 border-b border-dashed border-slate-300 hover:border-indigo-600 ${pitch.internalPctOverride !== undefined ? 'bg-indigo-50 px-1 rounded text-indigo-900 font-bold' : ''}`}>
+                            {alloc.internalSharePct}%{pitch.internalPctOverride !== undefined ? ' *' : ''}
+                          </span>
+                          <span className="text-slate-300 mx-1">/</span>
+                          <span className="font-semibold text-emerald-700">{alloc.externalSharePct}%</span>
+                        </div>
+                      )}
                     </td>
 
                     {/* 3. Used Vendors list (Nr of vendors) */}
@@ -1332,32 +1616,65 @@ export default function SpecsCalculator({
                       {alloc.numVendorsUsed}
                     </td>
 
-                    {/* 4. Weighted CPI (replaces average CPI) */}
+                    {/* 4. Weighted CPI (with LOI assumption note if markup applied) */}
                     <td className="p-2 text-right font-mono col-output">
-                      {pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? (
-                        alloc.weightedCpi > pitch.targetedCpi ? (
-                          <span className="text-red-650 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded font-mono font-bold tracking-tight text-right w-full block">
-                            ${alloc.weightedCpi.toFixed(2)}
-                          </span>
-                        ) : (
-                          <span className="text-emerald-700 font-mono font-bold">
-                            ${alloc.weightedCpi.toFixed(2)}
-                          </span>
-                        )
-                      ) : (
-                        <span className="text-emerald-800 font-mono font-bold">
-                          ${alloc.weightedCpi.toFixed(2)}
-                        </span>
-                      )}
+                      <div className="flex flex-col items-end">
+                        <div className="flex items-center gap-1 justify-end">
+                          {alloc.hasLoiMarkup && (
+                            <InstantTooltip text={alloc.loiMarkupNote || 'Requested LOI is higher than database reference (<= 5m diff). Applied a +10% LOI friction mark-up on Weighted CPI.'}>
+                              <span
+                                className="text-[8px] bg-amber-100 text-amber-900 border border-amber-300 px-1 py-0.2 rounded font-sans font-bold cursor-help"
+                                title={alloc.loiMarkupNote}
+                              >
+                                +10% LOI
+                              </span>
+                            </InstantTooltip>
+                          )}
+                          {pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? (
+                            alloc.weightedCpi > pitch.targetedCpi ? (
+                              <span className="text-red-650 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded font-mono font-bold tracking-tight text-right block">
+                                ${alloc.weightedCpi.toFixed(2)}
+                              </span>
+                            ) : (
+                              <span className="text-emerald-700 font-mono font-bold">
+                                ${alloc.weightedCpi.toFixed(2)}
+                              </span>
+                            )
+                          ) : (
+                            <span className="text-emerald-800 font-mono font-bold">
+                              ${alloc.weightedCpi.toFixed(2)}
+                            </span>
+                          )}
+                        </div>
+                        {alloc.hasLoiMarkup && (
+                          <InstantTooltip text={alloc.loiMarkupNote || 'Requested LOI is higher than database reference (<= 5m diff). Applied a +10% LOI friction mark-up on Weighted CPI.'}>
+                            <span
+                              className="text-[8px] text-amber-600 italic font-medium cursor-help"
+                              title={alloc.loiMarkupNote}
+                            >
+                              * LOI assumption (+10%)
+                            </span>
+                          </InstantTooltip>
+                        )}
+                      </div>
                     </td>
 
                     {/* Targeted CPI */}
-                    <td className="p-2 text-right font-mono whitespace-nowrap col-output">
+                    <td
+                      className="p-2 text-right font-mono whitespace-nowrap col-output cursor-pointer hover:bg-amber-50"
+                      onClick={() => {
+                        if (editingCell?.rowId === pitch.id && editingCell?.field === 'targetedCpi') return;
+                        startEditing(pitch.id, 'targetedCpi', pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? pitch.targetedCpi : '');
+                      }}
+                      onDoubleClick={() => startEditing(pitch.id, 'targetedCpi', pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? pitch.targetedCpi : '')}
+                      title={alloc.hasLoiMarkup ? alloc.loiMarkupNote : (pitch.targetedCpi ? `Targeted CPI: ${pitch.targetedCpi.toFixed(2)}` : 'Click or double click to edit Targeted CPI')}
+                    >
                       {editingCell?.rowId === pitch.id && editingCell?.field === 'targetedCpi' ? (
                         <input
                            type="text"
                            value={tempEditValue}
                            onChange={(e) => setTempEditValue(e.target.value)}
+                           onClick={(e) => e.stopPropagation()}
                            onBlur={saveInlineEdit}
                            onKeyDown={(e) => e.key === 'Enter' && saveInlineEdit()}
                            autoFocus
@@ -1365,11 +1682,9 @@ export default function SpecsCalculator({
                         />
                       ) : (
                         <span
-                           onDoubleClick={() => startEditing(pitch.id, 'targetedCpi', pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? pitch.targetedCpi : '')}
                            className="cursor-pointer border-b border-dashed border-slate-205 hover:border-[#2b6cb0] font-semibold text-slate-705"
-                           title="Double click to edit Targeted CPI"
                         >
-                          {pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? `$${pitch.targetedCpi.toFixed(2)}` : '-'}
+                          {pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? `${pitch.targetedCpi.toFixed(2)}` : '-'}
                         </span>
                       )}
                     </td>
@@ -1450,12 +1765,16 @@ export default function SpecsCalculator({
                       );
                     })()}
 
-                    {/* Actions column with Duplicate Button */}
+                    {/* Actions column with Duplicate / Copy and Delete buttons */}
                     <td className="p-2 text-center">
-                      <div className="flex items-center justify-center gap-1.5 opacity-80 group-hover:opacity-100 transition">
+                      <div className="flex items-center justify-center gap-1.5 opacity-90 group-hover:opacity-100 transition">
                         <button
-                          onClick={() => handleToggleLockRow(pitch.id)}
-                          className={`p-1 rounded-md border transition shadow-sm cursor-pointer flex items-center justify-center ${
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleLockRow(pitch.id);
+                          }}
+                          className={`p-1 rounded-md border transition shadow-xs cursor-pointer flex items-center justify-center ${
                             pitch.isLocked
                               ? 'bg-amber-100 border-amber-300 text-amber-700 hover:bg-amber-200'
                               : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-200 hover:text-slate-800'
@@ -1470,18 +1789,26 @@ export default function SpecsCalculator({
                         </button>
 
                         <button
-                          onClick={() => handleDuplicateOption(pitch.id)}
-                          className="flex items-center gap-1 px-1.5 py-1 text-[10px] bg-slate-50 hover:bg-[#ebf8ff] text-[#2b6cb0] hover:text-[#205080] border border-slate-200 hover:border-[#bee3f8] rounded cursor-pointer transition shadow-sm font-semibold"
-                          title="Save and duplicate this scenario with the same parameters"
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDuplicateOption(pitch.id);
+                          }}
+                          className="flex items-center gap-1 px-2 py-1 text-[10px] bg-blue-50 hover:bg-blue-100 text-[#2b6cb0] hover:text-[#205080] border border-blue-200 hover:border-blue-300 rounded cursor-pointer transition shadow-xs font-semibold"
+                          title="Copy and duplicate this audience line to the bottom"
                         >
-                          <Copy className="h-3 w-3" />
-                          <span>Duplicate</span>
+                          <Copy className="h-3 w-3 shrink-0" />
+                          <span>Copy</span>
                         </button>
 
                         <button
-                          onClick={() => handleDeleteRow(pitch.id)}
-                          className="p-1 hover:text-rose-600 text-slate-400 hover:bg-rose-50 rounded transition"
-                          title="Delete scenario"
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteRow(pitch.id);
+                          }}
+                          className="p-1 hover:text-rose-600 text-slate-400 hover:bg-rose-50 rounded transition cursor-pointer"
+                          title="Delete audience line"
                         >
                           <XCircle className="h-3.5 w-3.5" />
                         </button>
@@ -1489,7 +1816,7 @@ export default function SpecsCalculator({
                     </td>
                   </tr>
                 );
-              })}
+              }))}
             </tbody>
           </table>
         </div>

@@ -8,7 +8,7 @@ __pycache__/
 
 # Original AI Studio export (kept locally for reference only)
 feasibility_initial/
-
+feasibility_initial_new/
 # Frontend (Node) - the build output in feasibility/static IS committed
 node_modules/
 
