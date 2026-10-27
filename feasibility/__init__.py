@@ -5,17 +5,20 @@ The UI is the original React app, prebuilt into ``feasibility/static`` (see
 shared state in SQLite.
 """
 
+import gzip
 import logging
 import os
 import sqlite3
+import threading
 from datetime import datetime
 
-from flask import Flask, abort, jsonify, request, send_file
+from flask import Flask, Response, abort, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
 
 from . import db
 from .chat_engine import process_rule_based_query
 from .excel_export import build_feasibility_workbook
+from .xlsx_import import xlsx_to_csv
 
 log = logging.getLogger(__name__)
 
@@ -25,8 +28,9 @@ def create_app(test_config=None):
 
     app.config.from_mapping(
         DATABASE=os.environ.get("FEASIBILITY_DB") or os.path.join(app.instance_path, "feasibility.db"),
-        # Capability databases can be large CSVs; the original Express server allowed 10 MB bodies.
-        MAX_CONTENT_LENGTH=int(os.environ.get("FEASIBILITY_MAX_UPLOAD_MB", "64")) * 1024 * 1024,
+        # The parsed capability database is sent as JSON with every vendor column on every row:
+        # "Database V2.xlsx" (8.3k rows x 166 vendors) is ~45 MB, so leave plenty of headroom.
+        MAX_CONTENT_LENGTH=int(os.environ.get("FEASIBILITY_MAX_UPLOAD_MB", "256")) * 1024 * 1024,
     )
     if test_config:
         app.config.update(test_config)
@@ -83,9 +87,33 @@ def register_routes(app):
 
     # --- Shared capability lookup database ---------------------------------
 
+    # Every page load downloads the whole database (tens of MB for a full export), so the
+    # gzipped document is built once per upload and served from memory.
+    database_cache = {"key": None, "gz": None}
+    database_cache_lock = threading.Lock()
+
+    def clear_database_cache():
+        with database_cache_lock:
+            database_cache.update(key=None, gz=None)
+
     @app.get("/api/database")
     def get_database():
-        return jsonify(db.get_capability_database())
+        meta = db.get_capability_database_meta()
+        if meta is None:
+            return jsonify(None)
+        key = (meta["uploadedAt"], meta["rowCount"], meta["filename"])
+        with database_cache_lock:
+            if database_cache["key"] != key:
+                database_cache.update(key=key, gz=gzip.compress(db.get_capability_database_json(), 6))
+            payload = database_cache["gz"]
+
+        if request.accept_encodings["gzip"]:
+            response = Response(payload, mimetype="application/json")
+            response.headers["Content-Encoding"] = "gzip"
+        else:
+            response = Response(gzip.decompress(payload), mimetype="application/json")
+        response.headers["Vary"] = "Accept-Encoding"
+        return response
 
     @app.put("/api/database")
     def put_database():
@@ -94,12 +122,28 @@ def register_routes(app):
         if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
             abort(400, description="'rows' must be a list of database records.")
         filename = body.get("filename")
-        return jsonify(db.replace_capability_database(rows, str(filename) if filename else None))
+        meta = db.replace_capability_database(rows, str(filename) if filename else None)
+        clear_database_cache()
+        return jsonify(meta)
 
     @app.delete("/api/database")
     def delete_database():
         db.delete_capability_database()
+        clear_database_cache()
         return "", 204
+
+    @app.post("/api/database/import-xlsx")
+    def import_database_xlsx():
+        """Turn an uploaded .xlsx into CSV text; the browser then parses and saves it as usual."""
+        upload = request.files.get("file")
+        if upload is None or not upload.filename:
+            abort(400, description="Upload an .xlsx file in the 'file' field.")
+        try:
+            csv_text, sheet, rows = xlsx_to_csv(upload.stream)
+        except Exception as exc:
+            log.warning("Could not read uploaded workbook %r: %s", upload.filename, exc)
+            abort(400, description="Could not read this file as an Excel workbook (.xlsx).")
+        return jsonify(csv=csv_text, sheet=sheet, rows=rows)
 
     # --- Shared saved options ------------------------------------------------
 

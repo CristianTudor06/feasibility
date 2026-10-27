@@ -38,10 +38,22 @@ export const api = {
   getDatabase: () => request<SharedDatabase | null>('/api/database'),
 
   saveDatabase: (rows: FeasibilityRow[], filename: string) =>
-    request<SharedDatabase>('/api/database', {
+    request<{ filename: string | null; uploadedAt: string; rowCount: number }>('/api/database', {
       method: 'PUT',
       body: JSON.stringify({ rows, filename })
     }),
+
+  // Excel databases are flattened to CSV by the server, then parsed in the browser like a .csv upload.
+  async convertDatabaseXlsx(file: File): Promise<string> {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch('/api/database/import-xlsx', { method: 'POST', body: form });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(body?.error || `${res.status} ${res.statusText}`);
+    }
+    return body.csv;
+  },
 
   deleteDatabase: () => request<void>('/api/database', { method: 'DELETE' }),
 

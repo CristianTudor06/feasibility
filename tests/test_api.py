@@ -1,7 +1,9 @@
+import gzip
 import io
+import json
 
 import pytest
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from feasibility import create_app
 
@@ -38,6 +40,50 @@ def test_capability_database_roundtrip(client):
 
     assert client.delete("/api/database").status_code == 204
     assert client.get("/api/database").get_json() is None
+
+
+def test_capability_database_is_served_gzipped(client):
+    client.put("/api/database", json={"rows": [ROW] * 50, "filename": "big.csv"})
+    res = client.get("/api/database", headers={"Accept-Encoding": "gzip, deflate"})
+    assert res.headers["Content-Encoding"] == "gzip"
+    body = json.loads(gzip.decompress(res.data))
+    assert len(body["rows"]) == 50 and body["filename"] == "big.csv"
+
+    # A new upload must not be hidden by the cached copy.
+    client.put("/api/database", json={"rows": [ROW], "filename": "small.csv"})
+    assert client.get("/api/database").get_json()["filename"] == "small.csv"
+
+
+def test_import_xlsx_flattens_cells_for_the_csv_parser(client):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Centralized"
+    ws.append(["Option", "Market", "Target", "LOI", "IR%", "IR universe", "Quotas", "Internal",
+               "Vendor 1", "Vendor 1 CPI", "Vendor 2", "Vendor 2 CPI"])
+    ws.append([1, "Germany", 'Pet owners\nbuying "Fabric Softener"', 10, 0.2, "Gen pop", "AGR", 700,
+               1250, 3.88, None, "$3.50"])
+    ws.append([None] * 12)  # blank rows are dropped
+    ws.append([2, "Japan", "Gen pop", 15, 0.35, "Gen pop", "no quotas", 0, 300, "1.46 $"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    res = client.post("/api/database/import-xlsx", data={"file": (buf, "Database V2.xlsx")},
+                      content_type="multipart/form-data")
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["sheet"] == "Centralized" and body["rows"] == 2
+    lines = body["csv"].splitlines()
+    assert len(lines) == 3  # header + 2 rows: no line breaks left inside cells
+    assert lines[1] == "1,Germany,Pet owners buying 'Fabric Softener',10,0.2,Gen pop,AGR,700,1250,3.88,,$3.50"
+    assert lines[2] == "2,Japan,Gen pop,15,0.35,Gen pop,no quotas,0,300,1.46 $"
+
+
+def test_import_xlsx_rejects_non_workbooks(client):
+    res = client.post("/api/database/import-xlsx", data={"file": (io.BytesIO(b"a,b\n1,2"), "db.xlsx")},
+                      content_type="multipart/form-data")
+    assert res.status_code == 400
+    assert "Excel" in res.get_json()["error"]
 
 
 def test_capability_database_rejects_bad_payload(client):

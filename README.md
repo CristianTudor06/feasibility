@@ -18,6 +18,12 @@ self-hosted on a workstation and opened by colleagues at `http://<workstation-ip
 the chat history, the time zone, widget visibility, font size and target budget stay in each
 person's own browser.
 
+**Inserting a database.** *Insert Database* accepts a `.csv` or an Excel workbook (`.xlsx`). Prefer
+the `.xlsx` (e.g. `Database V2.xlsx`): the server reads it directly, so long audience descriptions
+with line breaks or quotes survive intact and Excel's regional CSV settings (`;` separators, `,`
+decimals) don't matter. A full database is large (8.3k rows x 166 vendors is ~45 MB once parsed), so
+the upload takes a few seconds; afterwards each user downloads it compressed (~1 MB).
+
 The app needs no internet access. Fonts are bundled, and the .docx, .pptx, CSV and Excel exports
 are all generated locally.
 
@@ -72,7 +78,7 @@ Register-ScheduledTask -TaskName "CMT Feasibility Tool" -Action $action -Trigger
 | Port | `5007` | `run.py --port 8080` or env var `PORT` |
 | Bind address | `0.0.0.0` (all interfaces) | `run.py --host 127.0.0.1` or env var `HOST` |
 | Database file | `instance/feasibility.db` | env var `FEASIBILITY_DB=D:\data\cmt.db` |
-| Max upload size | 64 MB | env var `FEASIBILITY_MAX_UPLOAD_MB` |
+| Max upload size | 256 MB | env var `FEASIBILITY_MAX_UPLOAD_MB` |
 
 ### Backups
 
@@ -104,6 +110,7 @@ cd frontend && npm run dev                   # UI on http://localhost:5173 (prox
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` / `PUT` / `DELETE` | `/api/database` | Shared capability lookup database (`{rows, filename}`) |
+| `POST` | `/api/database/import-xlsx` | Converts an uploaded `.xlsx` to CSV text for the browser's parser |
 | `GET` / `POST` | `/api/saved-options` | List / create saved options |
 | `PUT` / `DELETE` | `/api/saved-options/<id>` | Overwrite / delete a saved option |
 | `POST` | `/api/chat` | Rule-based assistant (same contract as the original Express route) |

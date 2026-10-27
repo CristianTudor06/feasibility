@@ -68,13 +68,27 @@ def init_db(path):
 
 # --- Capability lookup database ---------------------------------------------
 
-def get_capability_database():
-    db = get_db()
-    meta = db.execute("SELECT filename, uploaded_at FROM capability_upload WHERE id = 1").fetchone()
+def get_capability_database_meta():
+    meta = get_db().execute(
+        "SELECT filename, uploaded_at, row_count FROM capability_upload WHERE id = 1"
+    ).fetchone()
     if meta is None:
         return None
-    rows = [json.loads(r["data"]) for r in db.execute("SELECT data FROM capability_rows ORDER BY position")]
-    return {"rows": rows, "filename": meta["filename"], "uploadedAt": meta["uploaded_at"]}
+    return {"filename": meta["filename"], "uploadedAt": meta["uploaded_at"], "rowCount": meta["row_count"]}
+
+
+def get_capability_database_json():
+    """The whole database as a UTF-8 JSON document, assembled from the stored row JSON
+    without decoding it (a large database is tens of MB). None when nothing is uploaded."""
+    meta = get_capability_database_meta()
+    if meta is None:
+        return None
+    rows = get_db().execute("SELECT data FROM capability_rows ORDER BY position")
+    body = ",".join(r["data"] for r in rows)
+    return (
+        '{"rows":[' + body + '],"filename":' + json.dumps(meta["filename"])
+        + ',"uploadedAt":' + json.dumps(meta["uploadedAt"]) + "}"
+    ).encode("utf-8")
 
 
 def replace_capability_database(rows, filename):
@@ -93,7 +107,7 @@ def replace_capability_database(rows, filename):
             "INSERT OR REPLACE INTO capability_upload (id, filename, uploaded_at, row_count) VALUES (1, ?, ?, ?)",
             (filename, uploaded_at, len(rows)),
         )
-    return {"rows": rows, "filename": filename, "uploadedAt": uploaded_at}
+    return {"filename": filename, "uploadedAt": uploaded_at, "rowCount": len(rows)}
 
 
 def delete_capability_database():

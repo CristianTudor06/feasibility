@@ -630,44 +630,58 @@ export default function App() {
   const computedAllocations = rawAllocations;
 
   // Handlers for Custom Capability Database uploads
-  const handleInsertDatabaseCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        try {
-          const text = event.target?.result as string;
-          if (text) {
-            const parsed = parseCSVToPitches(text);
-            if (parsed.length > 0) {
-              try {
-                await api.saveDatabase(parsed, file.name);
-              } catch (err: any) {
-                alert(`Could not save the database to the server: ${err.message || err}`);
-                return;
-              }
-              setInsertedDatabase(parsed);
-              setToastNotification({
-                message: `Successfully loaded local database! ${parsed.length} entries detected. Click "Check Feasibility" to match.`,
-                type: 'success'
-              });
-            } else {
-              setToastNotification({
-                message: "Could not parse any rows from this file. Ensure columns match the required fields.",
-                type: 'error'
-              });
-            }
-          }
-        } catch (err: any) {
-          setToastNotification({
-            message: `Error parsing database CSV: ${err.message || err}`,
-            type: 'error'
-          });
-        }
-      };
-      reader.readAsText(file);
-    }
+  const [isImportingDb, setIsImportingDb] = useState(false);
+
+  // Handlers for Custom Capability Database uploads (.csv, or .xlsx converted to CSV by the server)
+  const handleInsertDatabaseCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files && e.target.files[0];
     e.target.value = '';
+    if (!file) return;
+
+    const isExcel = /\.xlsx?m?$/i.test(file.name);
+    setIsImportingDb(true);
+    try {
+      let text: string;
+      try {
+        text = isExcel ? await api.convertDatabaseXlsx(file) : await file.text();
+      } catch (err: any) {
+        alert(`Could not read the database file: ${err.message || err}`);
+        return;
+      }
+
+      let parsed: FeasibilityRow[];
+      try {
+        parsed = text ? parseCSVToPitches(text) : [];
+      } catch (err: any) {
+        setToastNotification({
+          message: `Error parsing database CSV: ${err.message || err}`,
+          type: 'error'
+        });
+        return;
+      }
+
+      if (parsed.length === 0) {
+        setToastNotification({
+          message: "Could not parse any rows from this file. Ensure columns match the required fields.",
+          type: 'error'
+        });
+        return;
+      }
+
+      try {
+        await api.saveDatabase(parsed, file.name);
+      } catch (err: any) {
+        alert(`Could not save the database to the server: ${err.message || err}`);
+        return;
+      }
+      setInsertedDatabase(parsed);
+      setToastNotification({
+        message: `Successfully loaded local database! ${parsed.length} entries detected. Click "Check Feasibility" to match.`,
+        type: 'success'
+      });
+    } finally {
+      setIsImportingDb(false);
+    }
   };
 
   const handleGlobalReset = async (shouldSave: boolean) => {
@@ -1057,21 +1071,22 @@ export default function App() {
               type="file"
               ref={dbFileInputRef}
               onChange={handleInsertDatabaseCSV}
-              accept=".csv"
+              accept=".csv,.xlsx,.xlsm"
               className="hidden"
             />
             <button
               id="insert-db-nav-btn"
               onClick={() => dbFileInputRef.current?.click()}
+              disabled={isImportingDb}
               className={`flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all duration-150 cursor-pointer border ${
                 insertedDatabase
                   ? 'bg-emerald-50 text-emerald-800 border-emerald-200 font-bold'
                   : 'text-slate-600 hover:text-[#1a202c] hover:bg-slate-50 border-transparent'
               }`}
-              title="Insert a custom CSV database for feasibility lookups"
+              title="Insert a custom CSV or Excel (.xlsx) database for feasibility lookups"
             >
               <Database className={`h-4 w-4 shrink-0 ${insertedDatabase ? 'text-emerald-600 animate-pulse' : 'text-slate-500'}`} />
-              <span>{insertedDatabase ? `Database: Active (${insertedDatabase.length} rows)` : 'Insert Database'}</span>
+              <span>{isImportingDb ? 'Loading database...' : insertedDatabase ? `Database: Active (${insertedDatabase.length} rows)` : 'Insert Database'}</span>
             </button>
             <button
               id="global-reset-quote-nav-btn"
