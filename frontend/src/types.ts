@@ -131,4 +131,6 @@ export interface ChatMessage {
   text: string;
   timestamp: string;
   queryPitch?: FeasibilityRow;
+  cheapestOverridePrompt?: boolean;
+  cheapestPromptResolved?: 'reset' | 'keep';
 }

@@ -16,7 +16,6 @@ from flask import Flask, Response, abort, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
 
 from . import db
-from .chat_engine import process_rule_based_query
 from .excel_export import build_feasibility_workbook
 from .xlsx_import import xlsx_to_csv
 
@@ -178,23 +177,6 @@ def register_routes(app):
     def delete_saved_option(option_id):
         db.delete_saved_option(option_id)
         return "", 204
-
-    # --- Rule-based assistant -----------------------------------------------
-
-    @app.post("/api/chat")
-    def chat():
-        body = request.get_json(silent=True) or {}
-        messages = body.get("messages")
-        if not isinstance(messages, list):
-            return jsonify(error="Messages array is required."), 400
-        try:
-            return jsonify(process_rule_based_query(messages, body.get("dataState"), body.get("activeStrategy")))
-        except Exception:
-            log.exception("Local rule-based engine error")
-            return jsonify(
-                text="### ⚠️ System Notice\n\nAn unexpected error occurred while processing your request locally.",
-                updatedPitches=None,
-            ), 500
 
     # --- Excel export ----------------------------------------------------------
 

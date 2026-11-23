@@ -5,8 +5,9 @@ import { DEFAULT_PITCHES, DEFAULT_VENDORS, VENDOR_DATABASE_POOL } from './data/d
 import { safeStorage } from './lib/storage';
 import { api, SavedOption } from './lib/api';
 import { parseCSVToPitches } from './lib/csvParser';
+import { ATTACHED_VENDOR_TIERS, getAuthoritativeVendorConfig } from './data/vendorTiersData';
 import { calculateRowAllocation, calculateAllRows, calculateOptimizedAllocations, deduplicateDbRows } from './lib/calculator';
-import { findBestDbMatches, isValidCountry } from './lib/matching';
+import { findBestDbMatches, evaluateDbMatch, isValidCountry } from './lib/matching';
 
 // Import newly created modular components
 import DatabaseGrid from './components/DatabaseGrid';
@@ -46,10 +47,53 @@ import {
   X
 } from 'lucide-react';
 
+const getActiveVendorsForPitches = (
+  pitchList: FeasibilityRow[],
+  overrides: Record<string, VendorTier>
+): VendorTier[] => {
+  let maxUsedSlot = 0;
+  for (const p of pitchList) {
+    for (const key of Object.keys(p)) {
+      const m = key.match(/^vendor(\d+)$/i);
+      if (m && Number((p as any)[key]) > 0) {
+        const idx = parseInt(m[1], 10);
+        if (idx > maxUsedSlot) maxUsedSlot = idx;
+      }
+    }
+  }
+  const count = maxUsedSlot > 0 ? maxUsedSlot : 4;
+  const list: VendorTier[] = [];
+  for (let num = 1; num <= count; num++) {
+    const nameKey = `vendor ${num}`;
+    const customOverride = overrides[nameKey];
+    list.push(customOverride ? { ...customOverride } : getAuthoritativeVendorConfig(num));
+  }
+  return list;
+};
+
 export default function App() {
+  // Persisted Partner Mapping overrides (including "Do not use" / "Red" bans)
+  const [vendorOverrides, setVendorOverrides] = useState<Record<string, VendorTier>>(() => {
+    const saved = safeStorage.getItem('procurement_vendor_overrides');
+    try {
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
   // Primary state holding our entire active workflow
   const [pitches, setPitches] = useState<FeasibilityRow[]>(DEFAULT_PITCHES);
-  const [vendors, setVendors] = useState<VendorTier[]>(DEFAULT_VENDORS);
+  const [vendors, setVendors] = useState<VendorTier[]>(() => {
+    const saved = safeStorage.getItem('procurement_vendor_overrides');
+    let initialOverrides: Record<string, VendorTier> = {};
+    try {
+      initialOverrides = saved ? JSON.parse(saved) : {};
+    } catch {
+      initialOverrides = {};
+    }
+    return getActiveVendorsForPitches(DEFAULT_PITCHES, initialOverrides);
+  });
   const [activeStrategy, setActiveStrategy] = useState<StrategyType>('cost');
   const [activeTab, setActiveTab] = useState<'calculator' | 'scenarios' | 'chat' | 'vendors'>('calculator');
 
@@ -77,7 +121,20 @@ export default function App() {
   const [showTzDropdown, setShowTzDropdown] = useState(false);
 
   const isSystemUpdatingRef = useRef(false);
-  const setToastNotification = (_val: any) => {};
+  const [toastNotification, setToastState] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const setToastNotification = (val: { message: string; type: 'success' | 'error' | 'info' } | null) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToastState(val);
+    if (val) {
+      toastTimerRef.current = setTimeout(() => {
+        setToastState(null);
+      }, 4500);
+    }
+  };
 
   // Feasibility strategy change handler
   const handleChangeStrategy = (newStrategy: StrategyType) => {
@@ -117,8 +174,10 @@ export default function App() {
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
     setChatMessages([resetMsg]);
-    setVendors(DEFAULT_VENDORS);
-    setHasChecked(false);
+    if (!liveFeasibility) {
+      setVendors(getActiveVendorsForPitches([], vendorOverrides));
+      setHasChecked(false);
+    }
   };
 
   // Capability lookup database (shared by all users, stored in SQLite on the server)
@@ -192,11 +251,15 @@ export default function App() {
   const [showSettingsDropdown, setShowSettingsDropdown] = useState(false);
   const [isGeneratingDoc, setIsGeneratingDoc] = useState(false);
   const settingsDropdownRef = useRef<HTMLDivElement>(null);
+  const tzDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (settingsDropdownRef.current && !settingsDropdownRef.current.contains(event.target as Node)) {
         setShowSettingsDropdown(false);
+      }
+      if (tzDropdownRef.current && !tzDropdownRef.current.contains(event.target as Node)) {
+        setShowTzDropdown(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
@@ -207,11 +270,13 @@ export default function App() {
 
   const hasManualAdjustments = () => {
     return pitches.some(p => {
-      if (p.maxInternalPercent !== undefined && p.maxInternalPercent !== 100) return true;
+      if (p.maxInternalPercent !== undefined && p.maxInternalPercent < 100) return true;
+      if (p.internalPctOverride !== undefined) return true;
+      if (p.overlapVariable !== undefined) return true;
       if (p.targetedCpi !== undefined && p.targetedCpi > 0) return true;
-      for (let i = 1; i <= 8; i++) {
-        if ((p as any)[`vendor${i}PctOverride`] !== undefined) return true;
-        if ((p as any)[`vendor${i}Pct`] !== undefined && (p as any)[`vendor${i}Pct`] !== 100) return true;
+      for (const key of Object.keys(p)) {
+        if (/^vendor\d+PctOverride$/i.test(key) && (p as any)[key] !== undefined) return true;
+        if (/^vendor\d+Pct$/i.test(key) && (p as any)[key] !== undefined && (p as any)[key] !== 100) return true;
       }
       return false;
     });
@@ -219,14 +284,20 @@ export default function App() {
 
   const resetManualAdjustments = (pList: FeasibilityRow[]) => {
     return pList.map(p => {
-      const copy = { ...p };
-      if ('targetedCpi' in copy) delete copy.targetedCpi;
-      copy.maxInternalPercent = 100;
-      for (let i = 1; i <= 8; i++) {
-        if (`vendor${i}PctOverride` in copy) delete (copy as any)[`vendor${i}PctOverride`];
-        (copy as any)[`vendor${i}Pct`] = 100;
+      if (p.isLocked) return p;
+      const copy: any = { ...p };
+      delete copy.targetedCpi;
+      delete copy.maxInternalPercent;
+      delete copy.internalPctOverride;
+      delete copy.overlapVariable;
+      for (const key of Object.keys(copy)) {
+        if (/^vendor\d+PctOverride$/i.test(key)) {
+          delete copy[key];
+        } else if (/^vendor\d+Pct$/i.test(key)) {
+          copy[key] = 100;
+        }
       }
-      return copy;
+      return copy as FeasibilityRow;
     });
   };
 
@@ -275,7 +346,13 @@ export default function App() {
     }
   };
 
-  const executeCheck = async (isOptimized: boolean, pitchesToUse: FeasibilityRow[], isSilent: boolean = false, optAllowSameLineTwice?: boolean) => {
+  const executeCheck = async (
+    isOptimized: boolean,
+    pitchesToUse: FeasibilityRow[],
+    isSilent: boolean = false,
+    optAllowSameLineTwice?: boolean,
+    overridesOverride?: Record<string, VendorTier>
+  ) => {
     if (!isSilent) {
       setIsChecking(true);
       setCheckingError('');
@@ -287,6 +364,8 @@ export default function App() {
       setAllowSameLineTwice(optAllowSameLineTwice);
     }
 
+    const activeOverrides = overridesOverride || vendorOverrides;
+
     const aggregateCapabilities = (dbRows: FeasibilityRow[]) => {
       const deduplicatedDbRows = deduplicateDbRows(dbRows);
       // 1. Find all matching database rows across all checked pitches using 100% specs & tolerance rules
@@ -297,38 +376,71 @@ export default function App() {
         groupMatches.forEach(m => allMatches.push(m));
       });
 
-      // 2. Scan all matches to detect which vendors possess actual delivered capabilities (> 0 capacity)
+      // 2. Scan all matches and full DB rows to detect active non-banned vendors (> 0 capacity) across 1..166+
+      // Persisted Partner Mapping overrides (including "Do not use" / "Red" bans) ALWAYS take precedence!
+      const vendorOverrideMap = new Map<string, VendorTier>();
+      (Object.entries(activeOverrides || {}) as [string, VendorTier][]).forEach(([k, v]) => {
+        vendorOverrideMap.set(k.toLowerCase().trim(), v);
+      });
+      (vendors || []).forEach(v => {
+        const key = v.name.toLowerCase().trim();
+        if (!vendorOverrideMap.has(key)) {
+          vendorOverrideMap.set(key, v);
+        }
+      });
+
+      const getVendorConfigForNum = (num: number): VendorTier => {
+        const nameKey = `vendor ${num}`;
+        const customOverride = vendorOverrideMap.get(nameKey);
+        if (customOverride) return customOverride;
+        const authConfig = getAuthoritativeVendorConfig(num);
+        if (authConfig) return authConfig;
+        const poolVendor = VENDOR_DATABASE_POOL.find(v => v.name.toLowerCase() === nameKey);
+        return poolVendor ? { ...poolVendor } : { name: `Vendor ${num}`, tier: 'No Tier', color: 'Grey' };
+      };
+
+      const isVendorBanned = (v: VendorTier): boolean => {
+        const tierLower = String(v.tier || '').toLowerCase();
+        const colorLower = String(v.color || '').toLowerCase();
+        return tierLower.includes('do not use') || colorLower === 'red';
+      };
+
       const foundVendorNums = new Set<number>();
       allMatches.forEach(row => {
         Object.keys(row).forEach(key => {
           const m = key.match(/^vendor(\d+)$/i);
-          if (m && !key.endsWith('Cpi') && !key.endsWith('Pct') && !key.endsWith('PctOverride')) {
+          if (m) {
+            const num = parseInt(m[1], 10);
             const val = Number((row as any)[key]);
-            if (val > 0) {
-              foundVendorNums.add(parseInt(m[1], 10));
+            if (val > 0 && !isVendorBanned(getVendorConfigForNum(num))) {
+              foundVendorNums.add(num);
             }
           }
         });
       });
 
-      // Find original tiers and colors configured for the detected vendors from database pool
+      // Preserve any manually added non-banned vendors across background/live checks
+      const manuallyAddedNums = new Set<number>();
+      (vendors || []).forEach(v => {
+        if (v.isAddedManually) {
+          const m = v.name.toLowerCase().match(/\d+/);
+          if (m) {
+            const num = parseInt(m[0], 10);
+            if (!isVendorBanned(getVendorConfigForNum(num))) {
+              foundVendorNums.add(num);
+              manuallyAddedNums.add(num);
+            }
+          }
+        }
+      });
+
+      // Resolve authoritative tiers & colors (with Partner Mapping overrides preserved)
       const detectedVendorsList: VendorTier[] = [];
       foundVendorNums.forEach(num => {
-        const name = `Vendor ${num}`;
-        const poolVendor = VENDOR_DATABASE_POOL.find(v => v.name.toLowerCase() === name.toLowerCase());
-        if (poolVendor) {
-          detectedVendorsList.push({
-            name: poolVendor.name,
-            tier: poolVendor.tier,
-            color: poolVendor.color
-          });
-        } else {
-          detectedVendorsList.push({
-            name,
-            tier: 'No Tier',
-            color: 'Grey'
-          });
-        }
+        const cfg = getVendorConfigForNum(num);
+        detectedVendorsList.push(
+          manuallyAddedNums.has(num) ? { ...cfg, isAddedManually: true } : cfg
+        );
       });
 
       // 3. Sort detected vendors strictly based on Tier and Color priorities!
@@ -364,18 +476,10 @@ export default function App() {
         return numA - numB;
       });
 
-      const mergedVendors: VendorTier[] = [...detectedVendorsList];
-      (vendors || []).forEach(v => {
-        const existing = mergedVendors.find(mv => mv.name.toLowerCase() === v.name.toLowerCase());
-        if (!existing) {
-          if (v.isAddedManually) {
-            mergedVendors.push(v);
-          }
-        } else if (v.isAddedManually) {
-          existing.isAddedManually = true;
-        }
-      });
-      const activeVendorsList = mergedVendors.length > 0 ? mergedVendors : DEFAULT_VENDORS;
+      const fallbackVendors = [1, 2, 3, 4]
+        .map(num => getVendorConfigForNum(num))
+        .filter(v => !isVendorBanned(v));
+      const activeVendorsList = detectedVendorsList.length > 0 ? detectedVendorsList : fallbackVendors;
       setVendors(activeVendorsList);
 
       const updatedPitches: FeasibilityRow[] = [];
@@ -446,6 +550,36 @@ export default function App() {
             }
           });
 
+          // For manually added vendors that weren't in topScore-5 matches, preserve their real tolerance-matched DB capacity
+          const hasManualMissingCap = activeVendorsList.some(
+            (v, i) => v.isAddedManually && !(aggregatedVendors[i + 1] > 0)
+          );
+          if (hasManualMissingCap) {
+            const broadMatches = deduplicateDbRows(
+              deduplicatedDbRows.filter(dbRow => evaluateDbMatch(pitch, dbRow).isMatch)
+            );
+            activeVendorsList.forEach((vendorObj, idx) => {
+              const vIdx = idx + 1;
+              if (!vendorObj.isAddedManually || (aggregatedVendors[vIdx] || 0) > 0) return;
+              const matchNum = vendorObj.name.toLowerCase().match(/\d+/);
+              const vendorNumInDb = matchNum ? parseInt(matchNum[0], 10) : vIdx;
+              const dbCapKey = `vendor${vendorNumInDb}`;
+              const dbCpiKey = `vendor${vendorNumInDb}Cpi`;
+              let maxCap = 0;
+              let bestCpi = 0;
+              broadMatches.forEach(mr => {
+                const cap = parseInt((mr as any)[dbCapKey], 10) || 0;
+                const cpi = parseFloat((mr as any)[dbCpiKey]) || 0;
+                if (cap > maxCap) maxCap = cap;
+                if (cpi > 0 && (bestCpi === 0 || cpi < bestCpi)) bestCpi = cpi;
+              });
+              if (maxCap > 0) {
+                aggregatedVendors[vIdx] = maxCap;
+                aggregatedVendorCpis[vIdx] = bestCpi;
+              }
+            });
+          }
+
           updatedPitch.internal = aggregatedInternal;
 
           // Pass LOI markup and IR reduction metadata to pitch row
@@ -467,23 +601,44 @@ export default function App() {
             delete updatedPitch.irReductionPct;
           }
 
-          const firstWithLimit = deduplicatedMatches.find(mr => mr.maxInternalPercent !== undefined);
+          const firstWithLimit = deduplicatedMatches.find(mr => mr.maxInternalPercent !== undefined && mr.maxInternalPercent < 100);
           if (firstWithLimit) {
             updatedPitch.maxInternalPercent = firstWithLimit.maxInternalPercent;
           }
 
+          // Remove any leftover vendor slots beyond activeVendorsList length
+          for (const key of Object.keys(updatedPitch)) {
+            const vm = key.match(/^vendor(\d+)(Cpi|Pct|PctOverride)?$/i);
+            if (vm && parseInt(vm[1], 10) > numActiveVendors) {
+              delete (updatedPitch as any)[key];
+            }
+          }
           for (let idx = 0; idx < numActiveVendors; idx++) {
             const vIdx = idx + 1;
             (updatedPitch as any)[`vendor${vIdx}`] = aggregatedVendors[vIdx] || 0;
             (updatedPitch as any)[`vendor${vIdx}Cpi`] = aggregatedVendorCpis[vIdx] || 0;
           }
         } else {
-          // No match or gibberish country: 0 output
+          // No match or gibberish country: 0 output and clear stale blocking overrides
           updatedPitch.internal = 0;
           updatedPitch.hasLoiMarkup = false;
           delete updatedPitch.loiDiff;
           delete updatedPitch.matchedDbLoi;
           delete updatedPitch.irReductionPct;
+          if (!isSilent) {
+            delete updatedPitch.maxInternalPercent;
+            delete updatedPitch.internalPctOverride;
+            delete updatedPitch.overlapVariable;
+          }
+          for (const key of Object.keys(updatedPitch)) {
+            if (!isSilent && /^vendor\d+PctOverride$/i.test(key)) {
+              delete (updatedPitch as any)[key];
+            }
+            const vm = key.match(/^vendor(\d+)(Cpi)?$/i);
+            if (vm && parseInt(vm[1], 10) > activeVendorsList.length) {
+              delete (updatedPitch as any)[key];
+            }
+          }
           const numActiveVendors = activeVendorsList.length;
           for (let idx = 0; idx < numActiveVendors; idx++) {
             const vIdx = idx + 1;
@@ -495,7 +650,7 @@ export default function App() {
         updatedPitches.push(updatedPitch);
       });
 
-      return updatedPitches;
+      return { updatedPitches, activeVendorsList };
     };
 
     const activeDb: FeasibilityRow[] = (insertedDatabase && insertedDatabase.length > 0)
@@ -515,7 +670,6 @@ export default function App() {
           totalFreshSample: 1000,
           totalSampleSize: 1000,
           internal: 3000,
-          maxInternalPercent: 100,
           vendor1: 2000,
           vendor1Cpi: 4.5,
           vendor2: 1200,
@@ -534,16 +688,16 @@ export default function App() {
         }));
 
     try {
-      const updatedPitches = aggregateCapabilities(activeDb);
+      const { updatedPitches, activeVendorsList } = aggregateCapabilities(activeDb);
 
       // Target pricing optimized check
       if (targetedBudget > 0) {
         const allocsCurrent = isOptimized
-          ? calculateOptimizedAllocations(updatedPitches, activeStrategy, vendors, targetedBudget, activeAllowSameLineTwice)
-          : calculateAllRows(updatedPitches, activeStrategy, vendors, activeAllowSameLineTwice);
+          ? calculateOptimizedAllocations(updatedPitches, activeStrategy, activeVendorsList, targetedBudget, activeAllowSameLineTwice)
+          : calculateAllRows(updatedPitches, activeStrategy, activeVendorsList, activeAllowSameLineTwice);
         const costCurrent = allocsCurrent.reduce((sum, item) => sum + (item.totalCost || 0), 0);
         if (costCurrent > targetedBudget && !isOptimized) {
-          const allocsCost = calculateAllRows(updatedPitches, 'cost', vendors, activeAllowSameLineTwice);
+          const allocsCost = calculateAllRows(updatedPitches, 'cost', activeVendorsList, activeAllowSameLineTwice);
           const costCost = allocsCost.reduce((sum, item) => sum + (item.totalCost || 0), 0);
           if (costCost <= targetedBudget) {
             handleChangeStrategy('cost');
@@ -591,6 +745,40 @@ export default function App() {
       executeCheck(useOptimizedRules, newPitches, true);
     } else if (!preserveHasChecked) {
       setHasChecked(false);
+    }
+  };
+
+  const handleUpdateVendorOverride = (updatedVendor: VendorTier) => {
+    const key = updatedVendor.name.toLowerCase().trim();
+    const nextOverrides: Record<string, VendorTier> = {
+      ...vendorOverrides,
+      [key]: { ...updatedVendor }
+    };
+    setVendorOverrides(nextOverrides);
+    safeStorage.setItem('procurement_vendor_overrides', JSON.stringify(nextOverrides));
+
+    if (liveFeasibility && pitches.length > 0 && !isSystemUpdatingRef.current) {
+      executeCheck(useOptimizedRules, pitches, true, allowSameLineTwice, nextOverrides);
+    }
+  };
+
+  const handleAddManualVendor = (newVendors: VendorTier[], newPitches: FeasibilityRow[]) => {
+    isSystemUpdatingRef.current = true;
+    setVendors(newVendors);
+    setPitches(newPitches);
+    if (liveFeasibility) {
+      setHasChecked(true);
+    }
+    isSystemUpdatingRef.current = false;
+  };
+
+  const handleRunCheapestFromChat = async (mode: 'reset' | 'keep') => {
+    handleChangeStrategy('cost');
+    if (mode === 'reset') {
+      const clearedPitches = resetManualAdjustments(pitches);
+      await executeCheck(false, clearedPitches, false, allowSameLineTwice);
+    } else {
+      await executeCheck(true, pitches, false, allowSameLineTwice);
     }
   };
 
@@ -715,17 +903,20 @@ export default function App() {
       return;
     }
 
-    // Clear everything: wipe pitches to empty, budget to 0, clear storage
+    // Clear quote lines, budget, and chat history while preserving the active database and Partner Mapping overrides
     setPitches([]);
+    setVendors(getActiveVendorsForPitches([], vendorOverrides));
     safeStorage.setItem('procurement_scenario_pitches', JSON.stringify([]));
     handleSetTargetedBudget(0);
+    setChatMessages([]);
+    safeStorage.removeItem('procurement_continuous_chat');
     setHasChecked(false);
     setResetBackupName('');
     setResetAlsoDatabase(false);
     setShowResetDialog(false);
 
     setToastNotification({
-      message: shouldSave ? "Current scenario saved, and quote has been fully reset to 0!" : "Quote reset: All audience lines, budget, and metrics have been reset to 0.",
+      message: shouldSave ? "Current scenario saved, and quote & chat history have been reset (database preserved)!" : "Quote reset: Audience lines, budget, and chat history cleared (database preserved).",
       type: 'info'
     });
   };
@@ -741,12 +932,18 @@ export default function App() {
       <header className="bg-white border-b border-slate-200" id="applet-top-header">
         <div className="max-w-7xl mx-auto px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
-            <div className="p-1.5 bg-[#ebf8ff] text-[#2b6cb0] rounded-lg border border-[#bee3f8]">
+            <div className="p-1.5 bg-gradient-to-br from-[#2b6cb0] to-indigo-700 text-white rounded-lg shadow-xs ring-1 ring-[#2b6cb0]/20">
               <Compass className="h-5 w-5" />
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-base font-bold tracking-tight text-slate-900 font-sans">
-                <span className="text-[#2b6cb0]">Feasibility</span> Tool
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <h1 className="flex items-baseline gap-1.5 font-sans tracking-tight leading-none">
+                <span className="text-base sm:text-lg font-black tracking-tight bg-gradient-to-r from-[#2b6cb0] to-indigo-700 bg-clip-text text-transparent">
+                  AFI
+                </span>
+                <span className="text-slate-300 font-light text-base select-none">-</span>
+                <span className="text-sm sm:text-base font-bold text-[#2b6cb0]">
+                  Automated <span className="text-slate-900">Feasibility</span> Intelligence
+                </span>
               </h1>
               <span className="bg-[#f0fff4] text-emerald-800 text-[10px] font-medium px-2 py-0.5 rounded-full border border-emerald-200">
                 Live Preview
@@ -900,7 +1097,7 @@ export default function App() {
               )}
             </div>
 
-            <div className="relative">
+            <div className="relative" ref={tzDropdownRef}>
               <button
                 onClick={() => setShowTzDropdown(!showTzDropdown)}
                 className="flex items-center gap-2 bg-slate-50 hover:bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 text-[11px] shrink-0 font-mono transition cursor-pointer select-none"
@@ -939,7 +1136,7 @@ export default function App() {
                         className={`w-full text-left px-3 py-1.5 text-xs transition cursor-pointer flex items-center justify-between ${
                           selectedCityTz === item.tz
                             ? 'bg-blue-50 text-blue-700 font-bold'
-                            : 'text-slate-650 hover:bg-slate-50 hover:text-slate-900'
+                            : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
                         }`}
                       >
                         <span className="truncate">{item.city}</span>
@@ -1015,8 +1212,8 @@ export default function App() {
             {savedDropdownOpen && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setSavedDropdownOpen(false)}></div>
-                <div className="absolute right-0 mt-1 w-64 bg-white rounded-xl border border-slate-200 shadow-xl py-2 z-20 animate-fade-in text-slate-705">
-                  <div className="px-3 pb-1.5 mb-1.5 border-b border-indigo-100 text-[10px] font-bold uppercase tracking-wider text-indigo-750 font-sans">
+                <div className="absolute right-0 mt-1 w-64 bg-white rounded-xl border border-slate-200 shadow-xl py-2 z-20 animate-fade-in text-slate-700">
+                  <div className="px-3 pb-1.5 mb-1.5 border-b border-indigo-100 text-[10px] font-bold uppercase tracking-wider text-indigo-700 font-sans">
                     Saved Specifications Limit ({savedOptions.length})
                   </div>
                   <div className="max-h-60 overflow-y-auto">
@@ -1131,6 +1328,7 @@ export default function App() {
               insertedDatabase={insertedDatabase}
               feasibilityFontSizeDelta={feasibilityFontSizeDelta}
               onResetQuote={() => setShowResetDialog(true)}
+              onNotify={setToastNotification}
             />
           )}
 
@@ -1158,6 +1356,10 @@ export default function App() {
               insertedDatabase={insertedDatabase}
               targetedBudget={targetedBudget}
               feasibilityFontSizeDelta={feasibilityFontSizeDelta}
+              liveFeasibility={liveFeasibility}
+              vendorOverrides={vendorOverrides}
+              onAddManualVendor={handleAddManualVendor}
+              onNotify={setToastNotification}
             />
           )}
 
@@ -1168,10 +1370,12 @@ export default function App() {
               allocations={computedAllocations}
               activeStrategy={activeStrategy}
               vendors={vendors}
+              vendorOverrides={vendorOverrides}
               onUpdatePitches={handleUpdatePitches}
               messages={chatMessages}
               setMessages={setChatMessages}
               onUpdateStrategy={handleChangeStrategy}
+              onRunCheapestWithMode={handleRunCheapestFromChat}
               isFloating={false}
             />
           )}
@@ -1180,6 +1384,8 @@ export default function App() {
             <VendorManager
               vendors={vendors}
               onUpdateVendors={setVendors}
+              vendorOverrides={vendorOverrides}
+              onUpdateVendorOverride={handleUpdateVendorOverride}
             />
           )}
         </div>
@@ -1193,10 +1399,12 @@ export default function App() {
           allocations={computedAllocations}
           activeStrategy={activeStrategy}
           vendors={vendors}
+          vendorOverrides={vendorOverrides}
           onUpdatePitches={handleUpdatePitches}
           messages={chatMessages}
           setMessages={setChatMessages}
           onUpdateStrategy={handleChangeStrategy}
+          onRunCheapestWithMode={handleRunCheapestFromChat}
           isFloating={true}
           isOpen={isChatOpen}
           onClose={() => setIsChatOpen(false)}
@@ -1390,7 +1598,7 @@ export default function App() {
             <p className="text-xs text-slate-600 leading-relaxed">
               Are you sure you want to run the feasibility optimization with your current custom manual adjustments (including edited panel blends, targeted budget constraints, and targeted CPIs)?
               <br/><br/>
-              Optimization will evaluate across all 43 available suppliers, following <strong>{allowSameLineTwice ? 'Feasibility for Options (reusing feasibility across scenarios)' : 'Feasibility for Targets (unique inventory per target)'}</strong> based on your previous check mode.
+              Optimization will evaluate across all active database suppliers (166+ authoritative tiers, scalable to 1,000+ columns), following <strong>{allowSameLineTwice ? 'Feasibility for Options (reusing feasibility across scenarios)' : 'Feasibility for Targets (unique inventory per target)'}</strong> based on your previous check mode.
               <br/><br/>
               If any target lines are unfeasible under your manual adjustments or exceed our targeted budget limit, they will automatically fall back to standard cost-optimized rules to ensure full feasibility.
             </p>
@@ -1415,6 +1623,38 @@ export default function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Global Toast Notification */}
+      {toastNotification && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed bottom-5 right-5 z-[100] max-w-md flex items-start gap-2.5 px-4 py-3 rounded-xl border shadow-xl text-xs font-medium animate-fade-in ${
+            toastNotification.type === 'error'
+              ? 'bg-rose-50 border-rose-200 text-rose-900'
+              : toastNotification.type === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : 'bg-blue-50 border-blue-200 text-slate-800'
+          }`}
+        >
+          {toastNotification.type === 'error' ? (
+            <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+          ) : toastNotification.type === 'success' ? (
+            <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+          ) : (
+            <Info className="h-4 w-4 text-[#2b6cb0] shrink-0 mt-0.5" />
+          )}
+          <span className="flex-1 leading-snug">{toastNotification.message}</span>
+          <button
+            type="button"
+            onClick={() => setToastNotification(null)}
+            className="text-slate-400 hover:text-slate-700 cursor-pointer shrink-0"
+            title="Dismiss notification"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
         </div>
       )}
 

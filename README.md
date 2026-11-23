@@ -10,13 +10,13 @@ self-hosted on a workstation and opened by colleagues at `http://<workstation-ip
 | Web server + API | [feasibility/](feasibility/) | Flask, served in production by Waitress |
 | Shared data | `instance/feasibility.db` | SQLite: the uploaded capability database + saved options |
 | User interface | [frontend/](frontend/) (source) → [feasibility/static/](feasibility/static/) (built) | The original React app, prebuilt so the server needs only Python |
-| Rule-based assistant | [feasibility/chat_engine.py](feasibility/chat_engine.py) | Deterministic, no AI and no external calls |
+| Rule-based assistant | [frontend/src/lib/ruleEngine.ts](frontend/src/lib/ruleEngine.ts) | The original server's chat rules, run in the browser. Deterministic, no AI and no external calls |
 | Excel export | [feasibility/excel_export.py](feasibility/excel_export.py) | Generated server-side with openpyxl |
 
 **What is shared and what is personal.** The capability lookup database (*Insert Database*) and the
 *Saved Options* are stored on the server, so everyone sees the same ones. The specs you are editing,
-the chat history, the time zone, widget visibility, font size and target budget stay in each
-person's own browser.
+the chat history, Partner Mapping edits, the time zone, widget visibility, font size and target
+budget stay in each person's own browser.
 
 **Inserting a database.** *Insert Database* accepts a `.csv` or an Excel workbook (`.xlsx`). Prefer
 the `.xlsx` (e.g. `Database V2.xlsx`): the server reads it directly, so long audience descriptions
@@ -98,6 +98,19 @@ npm install
 npm run build        # writes to ../feasibility/static
 ```
 
+### Bringing in a new AI Studio export
+
+Put the export next to the repo (folders named `feasibility_initial*` are git-ignored, because they
+contain a Firebase config), merge its `src/` changes into `frontend/src/`, keeping the Flask-specific
+edits (saved options and database via `lib/api.ts`, no Google code, the *Download Excel* button), and
+re-sync the chat rules from its `server.ts`:
+
+```bash
+cd frontend
+node scripts/sync-rule-engine.mjs ../feasibility_initial_XX/server.ts   # rewrites src/lib/ruleEngine.ts
+npm run build
+```
+
 For live reloading while you develop, run Flask and the Vite dev server side by side:
 
 ```bash
@@ -113,7 +126,6 @@ cd frontend && npm run dev                   # UI on http://localhost:5173 (prox
 | `POST` | `/api/database/import-xlsx` | Converts an uploaded `.xlsx` to CSV text for the browser's parser |
 | `GET` / `POST` | `/api/saved-options` | List / create saved options |
 | `PUT` / `DELETE` | `/api/saved-options/<id>` | Overwrite / delete a saved option |
-| `POST` | `/api/chat` | Rule-based assistant (same contract as the original Express route) |
 | `POST` | `/api/export/xlsx` | Feasibility overview as an Excel file |
 | `GET` | `/api/health` | Health check |
 
@@ -126,8 +138,10 @@ pytest
 
 ## Differences from the AI Studio version
 
-- Express and Node have been replaced by Flask and Python. The rule-based assistant was ported
-  line for line and gives identical answers.
+- Express and Node have been replaced by Flask and Python. The chat assistant's rules (the old
+  `POST /api/chat` route) run in the browser instead, copied verbatim from the export's `server.ts`
+  by `frontend/scripts/sync-rule-engine.mjs`, so they give identical answers and the shared
+  database is not uploaded with every chat message.
 - The capability database and saved options moved from browser `localStorage` to shared SQLite
   storage. The reset dialog only deletes the shared database if you tick its checkbox.
 - The Google sign-in, Sheets, Docs and Slides code was removed. None of it was reachable from the

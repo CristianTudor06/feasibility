@@ -195,7 +195,9 @@ export function getCountryPreExistingSpecs(country?: string, insertedDb?: any[])
 export function getCountrySpecsByUniverse(
   country?: string,
   universe?: string,
-  insertedDb?: any[]
+  insertedDb?: any[],
+  selectedIr?: string | number,
+  selectedLoi?: number
 ): SpecsOptionsForPitch {
   const canonicalCountry = getCanonicalCountryName(country);
   const cleanCountry = canonicalCountry.toLowerCase();
@@ -278,8 +280,6 @@ export function getCountrySpecsByUniverse(
     new Set(countryRows.map(r => r.universe).filter(Boolean))
   ).sort();
 
-  // RULE: "daca aleg o tara, de ex. egypt, nu ar trebui sa vad variable ce nu exista pe egypt,
-  // ar trebui sa vad doar ce este in lista de variabile de pe egypt."
   // When a country is chosen, the variable dropdown contains ONLY what is in the list for that country!
   const universeDropdownOptions = preExistingUniverses.length > 0
     ? preExistingUniverses
@@ -298,28 +298,59 @@ export function getCountrySpecsByUniverse(
     new Set(countryRows.map(r => r.quotas).filter(Boolean))
   ).sort();
 
+  const normalizeIrPctStr = (v: string | number | undefined): string => {
+    if (v === undefined || v === null || v === '') return '';
+    if (typeof v === 'number') {
+      return String(v > 0 && v <= 1 ? Math.round(v * 100) : Math.round(v));
+    }
+    const clean = String(v).replace(/%/g, '').trim();
+    const num = parseFloat(clean);
+    if (isNaN(num) || num <= 0) return '';
+    return String(num > 0 && num < 1 ? Math.round(num * 100) : Math.round(num));
+  };
+
   const cleanUniverse = String(universe || '').trim().toLowerCase();
   const matchingRows = cleanUniverse
     ? countryRows.filter(r => r.universe.trim().toLowerCase() === cleanUniverse)
     : [];
 
   if (cleanUniverse && matchingRows.length > 0) {
-    // When a specific variable is chosen and exists in DB for this country:
-    // Show only the LOI / Quotas / IR that belong to that (country, variable) combination
-    const preExistingLois = Array.from(
-      new Set(matchingRows.map(r => r.loi).filter(l => l > 0))
-    ).sort((a, b) => a - b);
-
+    // Universe exists in DB for this country.
+    // Check step-by-step exact DB existence in order: Country -> IR Universe -> IR% -> LOI -> Quotas
     const preExistingIrs = Array.from(
       new Set(matchingRows.map(r => r.irRaw).filter(Boolean))
     );
 
-    const preExistingQuotas = Array.from(
+    const irTargetStr = normalizeIrPctStr(selectedIr);
+    const irFilteredRows = irTargetStr
+      ? matchingRows.filter(r => normalizeIrPctStr(r.irRaw) === irTargetStr)
+      : matchingRows;
+
+    const preExistingLois = Array.from(
+      new Set(irFilteredRows.map(r => r.loi).filter(l => l > 0))
+    ).sort((a, b) => a - b);
+
+    const loiTarget = selectedLoi && selectedLoi > 0 ? Number(selectedLoi) : 0;
+    const loiFilteredRows = loiTarget > 0
+      ? irFilteredRows.filter(r => r.loi === loiTarget)
+      : irFilteredRows;
+
+    const universeQuotas = Array.from(
       new Set(matchingRows.map(r => r.quotas).filter(Boolean))
     ).sort();
 
+    const exactQuotas = Array.from(
+      new Set(loiFilteredRows.map(r => r.quotas).filter(Boolean))
+    ).sort();
+
+    // No quotas rule remains valid whenever there is at least one DB row on that (Country, Universe)
+    // (or matching exact upstream combination)
+    const preExistingQuotas = Array.from(
+      new Set(['No quotas', ...exactQuotas])
+    );
+
     const quotaDropdownOptions = Array.from(
-      new Set(['No quotas', ...preExistingQuotas])
+      new Set(['No quotas', ...universeQuotas])
     );
 
     return {
@@ -335,7 +366,8 @@ export function getCountrySpecsByUniverse(
   }
 
   if (cleanUniverse && matchingRows.length === 0) {
-    // Custom variable entered that does not exist in DB for this country
+    // Custom or cleared variable that does not exist in DB for this country ->
+    // all downstream preExisting arrays are empty so cells turn light grey to trigger selection.
     return {
       preExistingUniverses,
       preExistingLois: [],
@@ -348,12 +380,12 @@ export function getCountrySpecsByUniverse(
     };
   }
 
-  // Fallback when no variable selected yet: show all pre-existing specs for this country
+  // Fallback when no variable selected yet: downstream specs have no DB match until IR Universe is chosen
   return {
     preExistingUniverses,
-    preExistingLois: countryAllLois,
-    preExistingIrs: countryAllIrs,
-    preExistingQuotas: countryAllQuotas,
+    preExistingLois: [],
+    preExistingIrs: [],
+    preExistingQuotas: [],
     universeDropdownOptions,
     loiDropdownOptions: GLOBAL_ALL_LOIS,
     irDropdownOptions: GLOBAL_ALL_IRS,

@@ -18,6 +18,7 @@ export interface ComboboxCellProps {
   placeholder?: string;
   dropdownDirection?: 'down' | 'up' | 'auto';
   dropdownAlign?: 'left' | 'right' | 'auto';
+  disabled?: boolean;
 }
 
 export default function ComboboxCell({
@@ -35,10 +36,11 @@ export default function ComboboxCell({
   className = '',
   placeholder,
   dropdownDirection = 'auto',
-  dropdownAlign = 'auto'
+  dropdownAlign = 'auto',
+  disabled = false
 }: ComboboxCellProps) {
   const [internalEditing, setInternalEditing] = useState(false);
-  const isEditing = controlledIsEditing !== undefined ? controlledIsEditing : internalEditing;
+  const isEditing = !disabled && (controlledIsEditing !== undefined ? controlledIsEditing : internalEditing);
 
   const defaultPlaceholder = placeholder || (
     specType === 'loi' ? 'Insert LOI' :
@@ -55,7 +57,8 @@ export default function ComboboxCell({
   );
   // Tracks if the user has actively typed/edited the text in this session
   const [hasUserTyped, setHasUserTyped] = useState(false);
-  const [highlightedIndex, setHighlightedIndex] = useState<number>(0);
+  const [hasNavigated, setHasNavigated] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState<number>(-1);
   const [openUpwards, setOpenUpwards] = useState(false);
   const [alignRight, setAlignRight] = useState(false);
 
@@ -106,7 +109,8 @@ export default function ComboboxCell({
         : '';
       setInputValue(initialText);
       setHasUserTyped(false);
-      setHighlightedIndex(0);
+      setHasNavigated(false);
+      setHighlightedIndex(-1);
 
       setTimeout(() => {
         if (inputRef.current) {
@@ -121,13 +125,27 @@ export default function ComboboxCell({
     }
   }, [isEditing, value]);
 
+  const closeWithoutSaving = () => {
+    setHasUserTyped(false);
+    setHasNavigated(false);
+    if (onStopEditing) {
+      onStopEditing();
+    } else {
+      setInternalEditing(false);
+    }
+  };
+
   // Close on outside click
   useEffect(() => {
     if (!isEditing) return;
 
     function handleMouseDown(e: MouseEvent) {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        handleCommit(inputValue);
+        if (hasUserTyped) {
+          handleCommit(inputValue);
+        } else {
+          closeWithoutSaving();
+        }
       }
     }
 
@@ -135,10 +153,12 @@ export default function ComboboxCell({
     return () => {
       document.removeEventListener('mousedown', handleMouseDown);
     };
-  }, [isEditing, inputValue]);
+  }, [isEditing, inputValue, hasUserTyped]);
 
   const handleStart = () => {
+    if (disabled) return;
     setHasUserTyped(false);
+    setHasNavigated(false);
     if (onStartEditing) {
       onStartEditing();
     } else {
@@ -147,27 +167,50 @@ export default function ComboboxCell({
   };
 
   const handleCommit = (valToCommit: string) => {
+    if (disabled) {
+      closeWithoutSaving();
+      return;
+    }
     let clean = valToCommit.trim();
     // Normalize aliases for country
     if (specType === 'country' && clean) {
       clean = getCanonicalCountryName(clean) || clean;
     }
-    onSave(clean);
-    if (onStopEditing) {
-      onStopEditing();
-    } else {
-      setInternalEditing(false);
+
+    const prevStr =
+      value !== undefined && value !== null && value !== 0 && value !== '' && !String(value).startsWith('Insert')
+        ? String(value).trim()
+        : '';
+    const isClearing = clean === '' || clean.toLowerCase().startsWith('insert');
+    const isUnchanged = isClearing
+      ? prevStr === ''
+      : prevStr !== '' && normalizeMatchToken(clean) === normalizeMatchToken(prevStr);
+
+    if (!isUnchanged) {
+      onSave(clean);
     }
+    closeWithoutSaving();
+  };
+
+  const normalizeMatchToken = (opt: string | number) => {
+    const raw = String(opt).toLowerCase().replace(/%/g, '').trim();
+    if (specType === 'loi') {
+      return raw.replace(/\s*(min|mins|minute|minutes|m)\b/gi, '').trim();
+    }
+    if (specType === 'quota') {
+      return raw.replace(/[^a-z0-9]/g, '');
+    }
+    return raw;
   };
 
   // Pre-existing set for fast checking (case/number insensitive)
   const preExistingSet = new Set(
-    preExistingOptions.map(opt => String(opt).toLowerCase().replace(/%/g, '').trim())
+    preExistingOptions.map(opt => normalizeMatchToken(opt))
   );
 
   const isPreExisting = (opt: string | number) => {
-    const cleaned = String(opt).toLowerCase().replace(/%/g, '').trim();
-    if (!cleaned || cleaned.startsWith('insert') || cleaned === 'noquotas') return false;
+    const cleaned = normalizeMatchToken(opt);
+    if (!cleaned || cleaned.startsWith('insert')) return false;
     return preExistingSet.has(cleaned);
   };
 
@@ -240,34 +283,51 @@ export default function ComboboxCell({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setHighlightedIndex(prev => (prev + 1 < filteredOptions.length ? prev + 1 : prev));
-      if (dropdownRef.current) {
+      setHasNavigated(true);
+      const nextIdx = highlightedIndex + 1 < filteredOptions.length ? highlightedIndex + 1 : filteredOptions.length - 1;
+      setHighlightedIndex(nextIdx);
+      if (dropdownRef.current && nextIdx >= 0) {
         const items = dropdownRef.current.querySelectorAll('[data-item-index]');
-        const target = items[highlightedIndex + 1] as HTMLElement;
+        const target = items[nextIdx] as HTMLElement;
         if (target) target.scrollIntoView({ block: 'nearest' });
       }
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setHighlightedIndex(prev => (prev > 0 ? prev - 1 : 0));
-      if (dropdownRef.current) {
+      setHasNavigated(true);
+      const nextIdx = highlightedIndex > 0 ? highlightedIndex - 1 : 0;
+      setHighlightedIndex(nextIdx);
+      if (dropdownRef.current && nextIdx >= 0) {
         const items = dropdownRef.current.querySelectorAll('[data-item-index]');
-        const target = items[highlightedIndex - 1] as HTMLElement;
+        const target = items[nextIdx] as HTMLElement;
         if (target) target.scrollIntoView({ block: 'nearest' });
       }
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (filteredOptions.length > 0 && highlightedIndex >= 0 && highlightedIndex < filteredOptions.length) {
+      if (hasNavigated && highlightedIndex >= 0 && highlightedIndex < filteredOptions.length) {
         handleCommit(String(filteredOptions[highlightedIndex]));
+      } else if (hasUserTyped) {
+        const trimmedTyped = inputValue.trim();
+        if (!trimmedTyped) {
+          handleCommit('');
+        } else {
+          const nonPlaceholderOptions = filteredOptions.filter(
+            opt => String(opt) !== defaultPlaceholder
+          );
+          if (nonPlaceholderOptions.length > 0 && !trimmedTyped.toLowerCase().startsWith('insert')) {
+            const exact = nonPlaceholderOptions.find(
+              opt => normalizeMatchToken(opt) === normalizeMatchToken(trimmedTyped)
+            );
+            handleCommit(String(exact !== undefined ? exact : nonPlaceholderOptions[0]));
+          } else {
+            handleCommit(trimmedTyped);
+          }
+        }
       } else {
-        handleCommit(inputValue);
+        closeWithoutSaving();
       }
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      if (onStopEditing) {
-        onStopEditing();
-      } else {
-        setInternalEditing(false);
-      }
+      closeWithoutSaving();
     }
   };
 
@@ -279,19 +339,43 @@ export default function ComboboxCell({
       <div
         onClick={handleStart}
         onDoubleClick={handleStart}
-        className={`group cursor-pointer inline-flex items-center gap-1 py-0.5 px-1 rounded transition-colors hover:bg-slate-100 ${className}`}
-        title="Click to edit or choose from dropdown"
+        className={`group inline-flex items-center gap-1 py-0.5 px-1.5 rounded transition-colors ${
+          disabled
+            ? 'cursor-not-allowed opacity-80'
+            : 'cursor-pointer'
+        } ${
+          !isValueEmpty && !currentIsPreExisting
+            ? disabled
+              ? 'bg-slate-100 border border-slate-200 text-slate-400'
+              : 'bg-slate-100 hover:bg-slate-200/80 border border-slate-200 text-slate-400'
+            : disabled
+              ? ''
+              : 'hover:bg-slate-100'
+        } ${className}`}
+        title={
+          disabled
+            ? 'Row is locked — unlock to edit'
+            : !isValueEmpty && !currentIsPreExisting
+              ? 'Nu există match exact în baza de date pentru selecția curentă — click pentru a vedea opțiunile disponibile'
+              : 'Click to edit or choose from dropdown'
+        }
       >
         {isValueEmpty ? (
           <span className="border-b border-dashed border-slate-300 text-slate-400 italic font-normal text-[10.5px]">
             {defaultPlaceholder}
           </span>
         ) : (
-          <span className={`border-b border-dashed ${currentIsPreExisting ? 'border-emerald-400 text-emerald-950 font-bold' : 'border-slate-300 hover:border-slate-800 text-slate-800'}`}>
+          <span className={`border-b border-dashed ${
+            currentIsPreExisting
+              ? 'border-emerald-400 text-emerald-950 font-bold'
+              : 'border-slate-300 text-slate-400 font-normal'
+          }`}>
             {displayValue !== undefined ? displayValue : String(value)}
           </span>
         )}
-        <ChevronDown className="w-2.5 h-2.5 text-slate-400 opacity-60 group-hover:opacity-100 transition-opacity shrink-0" />
+        {!disabled && (
+          <ChevronDown className="w-2.5 h-2.5 text-slate-400 opacity-60 group-hover:opacity-100 transition-opacity shrink-0" />
+        )}
       </div>
     );
   }
@@ -316,7 +400,8 @@ export default function ComboboxCell({
           onChange={(e) => {
             setInputValue(e.target.value);
             setHasUserTyped(true);
-            setHighlightedIndex(0);
+            setHasNavigated(false);
+            setHighlightedIndex(-1);
           }}
           onKeyDown={handleKeyDown}
           placeholder={defaultPlaceholder}
@@ -329,7 +414,8 @@ export default function ComboboxCell({
               e.stopPropagation();
               setInputValue('');
               setHasUserTyped(false);
-              setHighlightedIndex(0);
+              setHasNavigated(false);
+              setHighlightedIndex(-1);
               inputRef.current?.focus();
             }}
             className="absolute right-1 text-slate-400 hover:text-slate-600 p-0.5 rounded cursor-pointer"

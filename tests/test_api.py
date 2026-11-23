@@ -116,38 +116,6 @@ def test_saved_options_crud(client):
     assert [o["id"] for o in client.get("/api/saved-options").get_json()] == ["saved-2"]
 
 
-def test_chat_requires_messages(client):
-    res = client.post("/api/chat", json={})
-    assert res.status_code == 400
-
-
-def test_chat_cheapest_version_sets_strategy(client):
-    res = client.post("/api/chat", json={
-        "messages": [{"role": "user", "text": "create the cheapest version"}],
-        "dataState": {"pitches": [{**ROW, "maxInternalPercent": 40}]},
-        "activeStrategy": "tier",
-    })
-    body = res.get_json()
-    assert res.status_code == 200
-    assert body["updateStrategy"] == "cost"
-    assert body["updatedPitches"][0]["maxInternalPercent"] == 100
-
-
-@pytest.mark.parametrize("question, heading", [
-    ("what is the loi rule?", "LOI (Duration) Calculation Rule"),
-    ("explain the ir rule", "Incidence (IR%) Calculation Rule"),
-    ("fara cote", "Quotas Rule"),
-])
-def test_chat_explains_matching_rules(client, question, heading):
-    res = client.post("/api/chat", json={
-        "messages": [{"role": "user", "text": question}],
-        "dataState": {"pitches": [ROW]},
-    })
-    body = res.get_json()
-    assert heading in body["text"]
-    assert body["updatedPitches"] is None
-
-
 def test_xlsx_export(client):
     alloc = {"rowId": "row-1", "status": "Fully Feasible", "allocatedInternal": 400, "allocatedVendor1": 500,
              "allocatedVendor2": 100, "totalAllocated": 1000, "unfilledSample": 0, "externalCost": 2000,

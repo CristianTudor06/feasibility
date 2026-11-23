@@ -106,6 +106,12 @@ export function calculateRowAllocation(
   for (let iter = 0; iter < 10; iter++) {
     // 1. Assign manual overrides when they are defined
     allocatedVendors = Array.from({ length: numVendors }, (_, i) => {
+      const slot = getSlotConfig(i);
+      const tierLower = String(slot.tier || '').toLowerCase();
+      const colorLower = String(slot.color || '').toLowerCase();
+      if (tierLower.includes('do not use') || colorLower === 'red') {
+        return 0;
+      }
       const vIdx = i + 1;
       const overrideKey = `vendor${vIdx}PctOverride` as keyof FeasibilityRow;
       const overrideVal = row[overrideKey] as number | undefined;
@@ -113,8 +119,10 @@ export function calculateRowAllocation(
     });
 
     const totalManual = allocatedVendors.reduce((acc, val) => acc + val, 0);
+    const penaltyMultiplier = 1 - currentPenaltyPct / 100;
+    const effectiveInternalCap = Math.round(baseInternalCap * penaltyMultiplier);
     
-    // Assign manual internal panel override if defined
+    // Assign manual internal panel override if defined (honoring manual adjustment just like vendor overrides)
     if (row.internalPctOverride !== undefined) {
       allocatedInternal = Math.round(target * (row.internalPctOverride / 100));
     } else {
@@ -122,25 +130,14 @@ export function calculateRowAllocation(
     }
 
     let remaining = Math.max(0, target - totalManual - allocatedInternal);
-    const penaltyMultiplier = 1 - currentPenaltyPct / 100;
 
     // 2. Internal Panel allocation - prioritized and maximized first (only if NOT manually overridden)
     if (row.internalPctOverride === undefined && strategy !== 'no-internal-cost' && remaining > 0) {
       const maxInternalPct = row.maxInternalPercent !== undefined ? row.maxInternalPercent : 100;
       const internalAllocationLimit = Math.round(row.totalSampleSize * (maxInternalPct / 100));
       
-      const effectiveInternalCap = Math.round(baseInternalCap * penaltyMultiplier);
-      
-      // RULE: Prioritize internal capabilities; if internal capabilities are on the limit (meaning
-      // they can cover the target but only do up to 10% more than target, e.g. effectiveInternalCap >= target && effectiveInternalCap <= target * 1.1),
-      // then we can add external capabilities (limiting internal allocation to 90% of target, so we add external to top up).
-      // Otherwise, we maximize internal (so if it is under the need, we use its full capacity, and if it is well over, we cover the full target).
-      let internalCapCeiling = effectiveInternalCap;
-      if (effectiveInternalCap > target && effectiveInternalCap <= target * 1.1) {
-        internalCapCeiling = Math.round(target * 0.90);
-      }
-
-      const takeInternal = Math.min(internalCapCeiling, remaining, internalAllocationLimit);
+      // Maximize internal capabilities up to remaining demand and maxInternalPercent ceiling
+      const takeInternal = Math.min(effectiveInternalCap, remaining, internalAllocationLimit);
       allocatedInternal = takeInternal;
       remaining -= takeInternal;
     }
@@ -153,9 +150,6 @@ export function calculateRowAllocation(
         const overrideKey = `vendor${vIdx}PctOverride` as keyof FeasibilityRow;
         if (row[overrideKey] === undefined) {
           const slot = getSlotConfig(i);
-          if (slot.isAddedManually) {
-            continue;
-          }
           // Strictly exclude "Do not use" and Red vendors from automated allocation
           const tierLower = String(slot.tier || '').toLowerCase();
           const colorLower = String(slot.color || '').toLowerCase();
@@ -342,6 +336,12 @@ export function calculateRowAllocation(
   if (row.internal > 0) potentialPanels++;
 
   for (let i = 0; i < numVendors; i++) {
+    const slot = getSlotConfig(i);
+    const tierLower = String(slot.tier || '').toLowerCase();
+    const colorLower = String(slot.color || '').toLowerCase();
+    if (tierLower.includes('do not use') || colorLower === 'red') {
+      continue;
+    }
     const vIdx = i + 1;
     const capKey = `vendor${vIdx}` as keyof FeasibilityRow;
     const cap = (row[capKey] as number) || 0;
@@ -376,7 +376,7 @@ export function calculateRowAllocation(
 
   // Share %
   const internalSharePct = totalAllocated > 0 ? Math.round((allocatedInternal / totalAllocated) * 100) : 0;
-  const externalSharePct = totalAllocated > 0 ? Math.round((totalVendorSample / totalAllocated) * 100) : 0;
+  const externalSharePct = totalAllocated > 0 ? (100 - internalSharePct) : 0;
 
   // Operational Profit (OP)
   const totalRevenue = totalAllocated * salesCpi;
@@ -454,15 +454,17 @@ export function calculateOptimizedAllocations(
     if (totalCost > targetedBudget) {
       const rowComparisons = rows.map((row, idx) => {
         const opt = results[idx];
-        const standardRow = { 
-          ...row, 
-          maxInternalPercent: 100
+        const standardRow: any = { 
+          ...row
         };
         const numVendors = vendors ? vendors.length : 4;
         delete standardRow.targetedCpi;
+        delete standardRow.maxInternalPercent;
+        delete standardRow.internalPctOverride;
+        delete standardRow.overlapVariable;
         for (let i = 1; i <= numVendors; i++) {
-          delete (standardRow as any)[`vendor${i}PctOverride`];
-          (standardRow as any)[`vendor${i}Pct`] = 100;
+          delete standardRow[`vendor${i}PctOverride`];
+          standardRow[`vendor${i}Pct`] = 100;
         }
 
         const std = calculateRowAllocation(standardRow, 'cost', vendors, false);
@@ -546,9 +548,18 @@ export function deduplicateDbRows(rows: any[]): any[] {
         existing._matchMetadata = r._matchMetadata;
       }
 
-      // Preserve vendor capabilities from different lines without duplication:
+      // Preserve vendor capabilities across ALL vendor columns in the database without duplication:
       // For each vendor, take the highest capacity and best (cheaper) CPI
-      for (let v = 1; v <= 43; v++) {
+      const vendorNums = new Set<number>();
+      for (const k of Object.keys(existing)) {
+        const m = k.match(/^vendor(\d+)$/i);
+        if (m) vendorNums.add(parseInt(m[1], 10));
+      }
+      for (const k of Object.keys(r)) {
+        const m = k.match(/^vendor(\d+)$/i);
+        if (m) vendorNums.add(parseInt(m[1], 10));
+      }
+      for (const v of vendorNums) {
         const capKey = `vendor${v}`;
         const cpiKey = `vendor${v}Cpi`;
         const currCap = Number(r[capKey] || 0);

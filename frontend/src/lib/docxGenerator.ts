@@ -169,7 +169,7 @@ function createBlueprintDocumentElements(isBRD = false): Paragraph[] {
     { text: "● Internal Maximization: The algorithm always satisfies demand first using the Internal Panel (proprietary pool) up to the specified maximum internal percent ceiling (default is 100%, or user-defined).", bold: false }
   ]));
   p.push(styledBulletMixed([
-    { text: "● Internal 90% Near-Limit Diversity Rule: If the effective internal capacity can satisfy the target sample size but is within 10% above the target (effective internal capacity >= target and <= target * 1.10), the engine automatically limits internal allocation to 90% of the target. This forces the remaining 10% to be allocated across external vendors, ensuring panel diversity and preventing single-source exhaustion.", bold: true }
+    { text: "● Uncapped Internal Coverage (Zero 90% Near-Limit Restriction): If the effective internal capacity covers up to 100% of the target sample size (including 100%–110%+), the engine utilizes the full internal allocation up to 100% with zero artificial 90% cap (unless the user manually sets a custom maxInternalPercent < 100%).", bold: true }
   ]));
   p.push(styledBulletMixed([
     { text: "● External sourcing: Any remaining unfilled quota is routed to active external Vendors. The vendors are sorted in ascending order based on their Cost Per Interview (CPI) rates.", bold: false }
@@ -287,7 +287,7 @@ function createBlueprintDocumentElements(isBRD = false): Paragraph[] {
     { text: "● The system won’t multiply the capabilities, using the same vendor’s capabilities from multiple rows, it will be used only once per option.", bold: true }
   ]));
   p.push(styledBulletMixed([
-    { text: "● Three Distinct Evaluation Modes: The button provides a dropdown selection with 3 specialized workflows: (1) Feasibility for Targets (exact scenario targets), (2) Feasibility for Options (multi-scenario evaluation across pitch variations), and (3) Feasibility Optimized (unconstrained optimization across all 43 suppliers in the pool).", bold: true }
+    { text: "● Three Distinct Evaluation Modes: The button provides a dropdown selection with 3 specialized workflows: (1) Feasibility for Targets (exact scenario targets), (2) Feasibility for Options (multi-scenario evaluation across pitch variations), and (3) Feasibility Optimized (unconstrained optimization across all active database suppliers, supporting 166+ authoritative tiers and scalable up to 1,000+ vendor columns).", bold: true }
   ]));
   p.push(styledBulletMixed([
     { text: "● Manual Overrides Safeguard Modal: If manual overrides are active (custom panel blends, CPI overrides, or internal caps), clicking Check Feasibility triggers a confirmation prompt offering 'Reset & Run' (reverting to pure database defaults) or 'Keep & Run' (preserving custom user adjustments intact).", bold: true }
@@ -296,25 +296,22 @@ function createBlueprintDocumentElements(isBRD = false): Paragraph[] {
   // D. 'Add New Vendor' Button
   p.push(styledHeading("D. 'Add New Vendor' Button", isBRD ? HeadingLevel.HEADING_3 : HeadingLevel.HEADING_2));
   p.push(styledBulletMixed([
-    { text: "● Purpose: Allows procurement leads to discover and enroll additional programmatic suppliers to tackle unfilled country deficits.", bold: false }
+    { text: "● Purpose: Allows procurement leads to discover and enroll additional programmatic suppliers from the active database to tackle unfilled country deficits.", bold: false }
   ]));
   p.push(styledBulletMixed([
-    { text: "● Logic Flow: Identifies active countries in specifications, compares them against unassigned suppliers inside the static Vendor Database Pool, selects the best matching vendor covering the highest number of active countries in your pitch, and appends the new supplier to the active workspace registry.", bold: false }
+    { text: "● Logic Flow: Evaluates all unassigned non-banned suppliers across the entire active database (1..1,000+ vendor columns) against active row specifications using zero fabricated capacities, selects the top matching vendor by match count, Tier, Color, and capacity, and appends it to the active workspace registry with real database capabilities & CPIs.", bold: false }
   ]));
   p.push(styledBulletMixed([
-    { text: "● The new supplier won’t affect the current feasibility, it will have 0% share allocated, it will be used when manual share will be allocated.", bold: true }
+    { text: "● Real DB Capacities Only: Unmatched specs or countries without database capabilities contribute 0 capacity; banned suppliers ('Do not use' / 'Red') are strictly excluded.", bold: true }
   ]));
   p.push(styledBulletMixed([
-    { text: "● The new suppliers will have their potential capabilities and prices from the database (same as the other ones)", bold: true }
+    { text: "● Its real database capabilities are included in max feasible for each row and impacted by composite overlap when multiple sources are active.", bold: true }
   ]));
   p.push(styledBulletMixed([
-    { text: "● Its capabilities will be added to the max feasible for each row and it will be impacted by the overlap (if overlap is applied)", bold: true }
+    { text: "● Candidate Waterfall Algorithm: The system selects candidates using a strict 4-stage hierarchy: (1) Real DB Spec Match Count > (2) Vendor Tier Quality (Tier 0 > 1 > 2 > 3 > No Tier) > (3) Quality Color Flag (Green > Yellow > Orange > Grey) > (4) Total Database Feasibility Volume.", bold: true }
   ]));
   p.push(styledBulletMixed([
-    { text: "● Candidate Waterfall Algorithm: The system selects candidates using a strict 4-stage hierarchy: (1) Country Coverage Match Count > (2) Vendor Tier Quality (Tier 0 > 1 > 2 > 3) > (3) Quality Color Flag (Green > Yellow > Orange) > (4) Total Feasibility Volume.", bold: true }
-  ]));
-  p.push(styledBulletMixed([
-    { text: "● Exhaustion Toast Alert: If no unassigned pool vendors cover active pitch countries, or all 43 suppliers have been added, the system displays an immediate notification: 'No vendors available'.", bold: true }
+    { text: "● Exhaustion Toast Alert: If no unassigned suppliers in the active database have real matching capacity > 0 for the current lines, the system displays a visible notification: 'No vendors available'.", bold: true }
   ]));
 
   // E. 'Reset / Clear All Overrides' Button
@@ -410,24 +407,24 @@ function createBlueprintDocumentElements(isBRD = false): Paragraph[] {
 
   p.push(spacingParagraph(12));
 
-  // Section 5: Authoritative 166-Vendor Tier & Quality Classification
+  // Section 5: Authoritative Scalable Vendor Tier & Quality Classification
   if (isBRD) {
     p.push(styledHeading("3.5 Authoritative Vendor Tier & Quality Classification System", HeadingLevel.HEADING_2));
   } else {
     p.push(styledHeading("5. AUTHORITATIVE VENDOR TIER & QUALITY CLASSIFICATION SYSTEM", HeadingLevel.HEADING_1));
   }
-  p.push(styledParagraph("Vendor governance follows the authoritative 166-supplier master classification regardless of database contents:"));
+  p.push(styledParagraph("Vendor governance follows the authoritative 166+ supplier master classification and scales dynamically to any uploaded database size (1,000+ vendor columns):"));
   p.push(styledBulletMixed([
     { text: "● Authoritative Tier & Color Taxonomy: ", bold: true },
-    { text: "All 166 vendors are assigned immutable Tier classifications (Tier 0, Tier 1, Tier 2, Tier 3, No Tier, Do not use) and Quality Colors (Green, Grey, Red). This classification persists across the entire system regardless of which capabilities database is loaded.", bold: true }
+    { text: "Vendors 1–166 carry immutable authoritative Tier classifications (Tier 0, Tier 1, Tier 2, Tier 3, No Tier, Do not use) and Quality Colors (Green, Yellow, Orange, Grey, Red); additional database columns above 166 (up to 1,000+) dynamically inherit 'No Tier' / 'Grey' unless overridden in Partner Mapping.", bold: true }
   ]));
   p.push(styledBulletMixed([
     { text: "● Strict Exclusion of 'Do not use' and 'Red' Vendors: ", bold: true },
-    { text: "Any vendor categorized with Tier 'Do not use' or Quality Color 'Red' is strictly and permanently excluded from automated feasibility allocation (0% allocation share and 0 capacity utilized).", bold: true }
+    { text: "Any vendor categorized with Tier 'Do not use' or Quality Color 'Red' is strictly excluded from automated feasibility allocation AND from Max Potential Feasible / overlap panel counts.", bold: true }
   ]));
   p.push(styledBulletMixed([
     { text: "● Allocation Precedence: ", bold: true },
-    { text: "In Tier-Priority and Cost-Optimized allocation, supplier prioritization adheres strictly to Tier rank (Tier 0 > Tier 1 > Tier 2 > Tier 3 > No Tier), followed by Quality Color (Green > Grey), and lowest CPI.", bold: false }
+    { text: "In Tier-Priority and Cost-Optimized allocation, supplier prioritization adheres strictly to Tier rank (Tier 0 > Tier 1 > Tier 2 > Tier 3 > No Tier), followed by Quality Color (Green > Yellow > Orange > Grey), and lowest CPI.", bold: false }
   ]));
 
   p.push(spacingParagraph(12));
@@ -440,16 +437,16 @@ function createBlueprintDocumentElements(isBRD = false): Paragraph[] {
   }
   p.push(styledParagraph("The Chat Assistant includes an interactive predefined specifications bar positioned directly above the conversation stream:"));
   p.push(styledBulletMixed([
-    { text: "● Cascading Dropdowns Aligned with Feasibility Overview: ", bold: true },
-    { text: "Country (with live database autocomplete per market), Target Size, LOI, IR%, IR Universe, Quotas, and Targeted CPI.", bold: true }
+    { text: "● Cascading Dropdowns Aligned with Grid Column Order: ", bold: true },
+    { text: "Country (with live database autocomplete per market), Target Size, IR Universe, IR%, LOI, Quotas, and Targeted CPI. Unmatched cells highlight light grey as an immediate visual trigger.", bold: true }
   ]));
   p.push(styledBulletMixed([
-    { text: "● Instant Real-World Validation: ", bold: true },
-    { text: "Specs selected from dropdowns populate instant feasibility calculations evaluated using the same rules and database pool as the main optimizer, with zero hallucinations.", bold: true }
+    { text: "● Zero-Assumption Natural Language Parsing: ", bold: true },
+    { text: "NL prompts resolve countries and universes dynamically from ALL_COUNTRIES and the active database; missing parameters remain empty ('' / 0) and new rows initialize with 0 capacities until resolved from the database.", bold: true }
   ]));
   p.push(styledBulletMixed([
     { text: "● Interactive 'Add as New Line' Action: ", bold: true },
-    { text: "Users can review the calculated allocation directly in chat and click 'Add as New Line' to immediately inject the specification and allocations into the live quote matrix.", bold: false }
+    { text: "Users can review the calculated allocation directly in chat and click 'Add as New Line' to immediately inject the specification into the live quote matrix.", bold: false }
   ]));
 
   p.push(spacingParagraph(16));
@@ -923,9 +920,7 @@ export async function downloadBRDDocument(
     "        effV3Cap = pitch.vendor3 * penalty",
     "        effV4Cap = pitch.vendor4 * penalty",
     "        maxInternalAllowed = round(targetDemand * ((pitch.maxInternalPercent || 100) / 100))",
-    "        // Internal 90% Near-Limit Diversity Rule: if near limit, force 10% external diversity",
-    "        if effInternalCap >= targetDemand and effInternalCap <= targetDemand * 1.10:",
-    "            maxInternalAllowed = min(maxInternalAllowed, round(targetDemand * 0.90))",
+    "        // Uncapped Internal: internal can fulfill up to 100% of target demand unless maxInternalPercent is manually lowered",
     "        if activeStrategy !== 'no-internal-cost' and remainingDemand > 0:",
     "            allocInternal = min(effInternalCap, remainingDemand, maxInternalAllowed)",
     "            remainingDemand = remainingDemand - allocInternal",
@@ -1494,17 +1489,17 @@ export async function downloadComprehensiveRulesManual(
 
   children.push(styledBulletMixed([
     { text: "23. 'Check Feasibility' Dropdown Button: ", bold: true },
-    { text: "Executes matching against reference capabilities with 3 specialized evaluation modes: (1) Feasibility for Targets (evaluates exact target lines without duplicate row reuse across targets), (2) Feasibility for Options (evaluates multi-option pitch variations and allows reusing the same feasibility benchmarks across different scenario options), and (3) Feasibility Optimized (unconstrained optimization across all 43 suppliers in the pool, inheriting whether the previous check was run under Feasibility for Options or Feasibility for Targets).", bold: false }
+    { text: "Executes matching against reference capabilities across all database vendor columns (166+ authoritative tiers, scalable to 1,000+) with 3 specialized evaluation modes: (1) Feasibility for Targets (evaluates exact target lines without duplicate row reuse across targets), (2) Feasibility for Options (evaluates multi-option pitch variations and allows reusing the same feasibility benchmarks across different scenario options), and (3) Feasibility Optimized (unconstrained optimization across all active database suppliers, inheriting whether the previous check was run under Feasibility for Options or Feasibility for Targets).", bold: false }
   ]));
 
   children.push(styledBulletMixed([
-    { text: "24. 'Add Row' Button ('Add Row' / 'Adaugă rând'): ", bold: true },
-    { text: "Appends a new scenario row with default specifications (e.g. France, 1000 completes, gen pop 18-65yo, 10 min LOI, 20% IR) to the active matrix.", bold: false }
+    { text: "24. 'Add Audience' Button: ", bold: true },
+    { text: "Appends a new audience line with 0 fabricated capacities (internal: 0, external vendors: 0) consistently across both Overview and Manage Scenario Specifications tabs; live database matching populates real capabilities.", bold: false }
   ]));
 
   children.push(styledBulletMixed([
     { text: "25. 'Add New Vendor' Button: ", bold: true },
-    { text: "Scans active pitch countries, interrogates the 43-vendor database pool, selects the top supplier matching active countries with highest tier quality, and enrolls them into the matrix with initial 0% allocation.", bold: false }
+    { text: "Scans active specification rows against the entire active database (1..1,000+ vendor columns) with zero fabricated capacities, excludes Do not use / Red suppliers, selects the top matching unassigned supplier by match count, Tier, Color, and DB capacity, and enrolls it into the matrix.", bold: false }
   ]));
 
   children.push(styledBulletMixed([
@@ -1753,7 +1748,7 @@ export async function downloadComprehensiveRulesManual(
 
   children.push(styledBulletMixed([
     { text: "● Feasibility Optimized Mode Inheritance: ", bold: true },
-    { text: "Feasibility Optimized retains its unconstrained 43-supplier algorithmic optimization, but strictly follows whether the user previously evaluated via 'Feasibility for Options' (allowing shared benchmark reuse across options) or 'Feasibility for Targets' (enforcing strict unique inventory per target without duplicates).", bold: false }
+    { text: "Feasibility Optimized evaluates across all active database suppliers (166+ authoritative tiers, scalable to 1,000+ columns), strictly following whether the user previously evaluated via 'Feasibility for Options' (allowing shared benchmark reuse across options) or 'Feasibility for Targets' (enforcing strict unique inventory per target without duplicates).", bold: false }
   ]));
 
   // 4.6 Composite Overlap Penalty Calculations

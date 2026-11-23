@@ -19,7 +19,6 @@ export const DEFAULT_PITCHES: FeasibilityRow[] = [
     totalFreshSample: 1000,
     totalSampleSize: 1000,
     internal: 5000,
-    maxInternalPercent: 50,
     vendor1: 100,
     vendor1Cpi: 4,
     vendor2: 200,

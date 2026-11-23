@@ -81,6 +81,7 @@ interface SpecsCalculatorProps {
   insertedDatabase?: any;
   feasibilityFontSizeDelta?: number;
   onResetQuote?: () => void;
+  onNotify?: (toast: { message: string; type: 'success' | 'error' | 'info' }) => void;
 }
 
 function InstantTooltip({
@@ -152,12 +153,15 @@ export default function SpecsCalculator({
   onToggleLiveFeasibility,
   insertedDatabase,
   feasibilityFontSizeDelta = 0,
-  onResetQuote
+  onResetQuote,
+  onNotify
 }: SpecsCalculatorProps) {
   const [exporting, setExporting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [isCheckDropdownOpen, setIsCheckDropdownOpen] = useState(false);
-  const setToastNotification = (_val: any) => {};
+  const setToastNotification = (val: { message: string; type: 'success' | 'error' | 'info' }) => {
+    if (onNotify) onNotify(val);
+  };
   const [localBudgetInput, setLocalBudgetInput] = useState<string>(() => (targetedBudget && targetedBudget > 0 ? String(targetedBudget) : ''));
 
   React.useEffect(() => {
@@ -243,6 +247,7 @@ export default function SpecsCalculator({
   // Inline editing state for specs and calculated values
   const [editingCell, setEditingCell] = useState<{ rowId: string; field: keyof FeasibilityRow } | null>(null);
   const [tempEditValue, setTempEditValue] = useState('');
+  const [initialEditValue, setInitialEditValue] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -294,10 +299,23 @@ export default function SpecsCalculator({
     const original = pitches.find(p => p.id === rowId);
     if (!original) return;
 
+    const newId = `row-duplicated-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const existingAlloc = original.lockedAllocation || allocations.find(a => a.rowId === rowId);
     const duplicateRow: FeasibilityRow = {
       ...original,
-      id: `row-duplicated-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: newId,
       option: `${original.option} (Copy)`,
+      ...(original.isLocked && existingAlloc
+        ? {
+            lockedAllocation: {
+              ...existingAlloc,
+              rowId: newId,
+              vendorAllocations: existingAlloc.vendorAllocations
+                ? { ...existingAlloc.vendorAllocations }
+                : undefined,
+            },
+          }
+        : {}),
     };
 
     onUpdatePitches([...pitches, duplicateRow], true);
@@ -324,7 +342,6 @@ export default function SpecsCalculator({
       totalFreshSample: 1000,
       totalSampleSize: 1000,
       internal: 0,
-      maxInternalPercent: 100,
       vendor1: 0,
       vendor1Cpi: 0,
       vendor2: 0,
@@ -473,15 +490,34 @@ export default function SpecsCalculator({
     }
   };
 
-  // Standard CSV Feasibility Download
+  // Standard CSV Feasibility Download (dynamically scales across all active vendors 1..1000+)
   const handleDownloadStandardCSV = () => {
     const filename = `feasibility_export_${activeStrategy}_${Date.now()}.csv`;
+    const activeVendors = vendors && vendors.length > 0 ? vendors : [];
+    const maxSlotFromPitches = pitches.reduce((max, row) => {
+      let rowMax = 0;
+      Object.keys(row).forEach(k => {
+        const m = k.match(/^vendor(\d+)$/i);
+        if (m) rowMax = Math.max(rowMax, parseInt(m[1], 10));
+      });
+      return Math.max(max, rowMax);
+    }, 0);
+    const numVendorCols = Math.max(activeVendors.length, maxSlotFromPitches, 4);
+
+    const vendorCapHeaders: string[] = [];
+    const vendorAllocHeaders: string[] = [];
+    for (let i = 1; i <= numVendorCols; i++) {
+      const vName = activeVendors[i - 1]?.name || `Vendor ${i}`;
+      vendorCapHeaders.push(`"${vName} Cap"`, `"${vName} CPI"`);
+      vendorAllocHeaders.push(`"Allocated ${vName}"`);
+    }
 
     const headers = [
       "Pitch name", "Source", "Option", "Market", "Target", "LOI", "IR%", "IR universe", "Quotas", "Nº of Waves",
-      "Total fresh sample", "Total Sample Size (CALCULATED)", "Internal Max", "Max Internal %", "Vendor 1 Cap", "Vendor 1 CPI", "Vendor 2 Cap", "Vendor 2 CPI",
-      "Vendor 3 Cap", "Vendor 3 CPI", "Vendor 4 Cap", "Vendor 4 CPI",
-      "Feasibility Status", "Allocated Internal", "Allocated Vendor 1", "Allocated Vendor 2", "Allocated Vendor 3", "Allocated Vendor 4",
+      "Total fresh sample", "Total Sample Size (CALCULATED)", "Internal Max", "Max Internal %",
+      ...vendorCapHeaders,
+      "Feasibility Status", "Allocated Internal",
+      ...vendorAllocHeaders,
       "Total Allocated Sample", "Unfilled Sample", "Max Potential", "Overlap Penalty %", "Internal Share %", "External Share %", "Used Vendors",
       "Weighted CPI ($)", "Number of Vendors", "PM Fee ($)", "Comparability Status", "Total Cost ($)", "OP - Operational Profit (%)"
     ];
@@ -492,10 +528,6 @@ export default function SpecsCalculator({
       const alloc = allocations.find(a => a.rowId === row.id) || {
         status: 'Unfeasible',
         allocatedInternal: 0,
-        allocatedVendor1: 0,
-        allocatedVendor2: 0,
-        allocatedVendor3: 0,
-        allocatedVendor4: 0,
         totalAllocated: 0,
         unfilledSample: row.totalSampleSize,
         maxPotential: 0,
@@ -518,6 +550,14 @@ export default function SpecsCalculator({
       const rowOpCosts = (alloc.externalCost || 0) + (alloc.internalCostRef || 0);
       const rowOpPct = rowRevenue > 0 ? ((rowRevenue - rowOpCosts) / rowRevenue) * 100 : 0;
 
+      const vendorCapValues: any[] = [];
+      const vendorAllocValues: any[] = [];
+      for (let i = 1; i <= numVendorCols; i++) {
+        vendorCapValues.push(Number((row as any)[`vendor${i}`] || 0));
+        vendorCapValues.push(Number((row as any)[`vendor${i}Cpi`] || 0));
+        vendorAllocValues.push(Number(alloc[`allocatedVendor${i}`] || 0));
+      }
+
       const lineValues = [
         `"${row.pitchName}"`,
         `"${row.source}"`,
@@ -533,20 +573,10 @@ export default function SpecsCalculator({
         row.totalSampleSize,
         row.internal,
         row.maxInternalPercent !== undefined ? row.maxInternalPercent : 100,
-        row.vendor1,
-        row.vendor1Cpi,
-        row.vendor2,
-        row.vendor2Cpi,
-        row.vendor3,
-        row.vendor3Cpi,
-        row.vendor4,
-        row.vendor4Cpi,
+        ...vendorCapValues,
         alloc.status,
         alloc.allocatedInternal,
-        alloc.allocatedVendor1,
-        alloc.allocatedVendor2,
-        alloc.allocatedVendor3,
-        alloc.allocatedVendor4,
+        ...vendorAllocValues,
         alloc.totalAllocated,
         alloc.unfilledSample,
         alloc.maxPotential,
@@ -608,22 +638,33 @@ export default function SpecsCalculator({
       return; // Disable editing on locked rows
     }
     setEditingCell({ rowId, field });
-    setTempEditValue(String(val));
+    const strVal = String(val);
+    setTempEditValue(strVal);
+    setInitialEditValue(strVal);
   };
 
   const saveInlineEdit = () => {
     if (!editingCell) return;
     const { rowId, field } = editingCell;
 
+    // Do not lock an override if the user clicked and blurred without changing the value
+    if (
+      (String(field).endsWith('PctOverride') || field === 'maxInternalPercent') &&
+      tempEditValue.trim() === initialEditValue.trim()
+    ) {
+      setEditingCell(null);
+      return;
+    }
+
     const updated = pitches.map((pitch) => {
       if (pitch.id === rowId) {
         let value: any = tempEditValue;
         if (field === 'irPercent') {
           let num = parseFloat(tempEditValue.replace('%', ''));
-          if (isNaN(num)) num = 20;
+          if (isNaN(num)) num = 0;
           value = num > 1 ? num / 100 : num;
         } else if (
-          String(field).endsWith('PctOverride')
+          String(field).endsWith('PctOverride') || field === 'maxInternalPercent'
         ) {
           const rawStr = tempEditValue.trim().toLowerCase();
           if (rawStr === '' || rawStr === 'auto' || rawStr === 'reset') {
@@ -636,27 +677,24 @@ export default function SpecsCalculator({
               const nextPitch = { ...pitch };
               delete (nextPitch as any)[field];
               return nextPitch;
+            } else if (field === 'maxInternalPercent' && num >= 100) {
+              const nextPitch = { ...pitch };
+              delete nextPitch.maxInternalPercent;
+              return nextPitch;
             } else {
-              value = Math.max(0, num);
+              value = Math.max(0, Math.min(100, num));
             }
           }
         } else if (
           [
             'loi', 'waves', 'totalFreshSample', 'totalSampleSize',
-            'internal', 'maxInternalPercent',
-            'vendor1', 'vendor1Cpi', 'vendor1Pct',
-            'vendor2', 'vendor2Cpi', 'vendor2Pct',
-            'vendor3', 'vendor3Cpi', 'vendor3Pct',
-            'vendor4', 'vendor4Cpi', 'vendor4Pct',
-            'vendor5', 'vendor5Cpi', 'vendor5Pct',
-            'vendor6', 'vendor6Cpi', 'vendor6Pct',
-            'vendor7', 'vendor7Cpi', 'vendor7Pct',
-            'vendor8', 'vendor8Cpi', 'vendor8Pct',
+            'internal',
             'pmFee', 'salesCpi', 'targetedCpi'
-          ].includes(String(field))
+          ].includes(String(field)) ||
+          String(field).startsWith('vendor')
         ) {
           value = parseFloat(tempEditValue.replace(/[^0-9.-]/g, '')) || 0;
-          if (String(field).endsWith('Pct') || field === 'maxInternalPercent') {
+          if (String(field).endsWith('Pct')) {
             value = Math.max(0, Math.min(100, value));
           }
         }
@@ -672,6 +710,7 @@ export default function SpecsCalculator({
   const handleCellSave = (rowId: string, field: keyof FeasibilityRow, rawVal: string) => {
     const updated = pitches.map((pitch) => {
       if (pitch.id === rowId) {
+        if (pitch.isLocked) return pitch;
         let value: any = rawVal;
         const lower = String(rawVal || '').trim().toLowerCase();
 
@@ -708,7 +747,20 @@ export default function SpecsCalculator({
             value = rawVal.trim();
           }
         }
-        return { ...pitch, [field]: value };
+        const nextPitch: any = { ...pitch, [field]: value };
+        if (field === 'irUniverse') {
+          nextPitch.target = value;
+        }
+        // Clear stale manual share/cap overrides when core specs change so calculation stays database-accurate
+        delete nextPitch.maxInternalPercent;
+        delete nextPitch.internalPctOverride;
+        delete nextPitch.overlapVariable;
+        for (const key of Object.keys(nextPitch)) {
+          if (/^vendor\d+PctOverride$/i.test(key)) {
+            delete nextPitch[key];
+          }
+        }
+        return nextPitch as FeasibilityRow;
       }
       return pitch;
     });
@@ -980,9 +1032,9 @@ export default function SpecsCalculator({
 
               <div className="pt-1.5 flex flex-col space-y-1">
                 <div className="flex items-center justify-between text-[10px] font-medium text-slate-600">
-                  <span className="font-bold text-slate-450 uppercase tracking-wider text-[8px]">Target Price:</span>
+                  <span className="font-bold text-slate-500 uppercase tracking-wider text-[8px]">Target Price:</span>
                   <div className="relative flex items-center">
-                    <span className="absolute left-1.5 text-slate-450 font-bold text-[9px]">$</span>
+                    <span className="absolute left-1.5 text-slate-500 font-bold text-[9px]">$</span>
                     <input
                       type="text"
                       placeholder="budget"
@@ -1019,12 +1071,12 @@ export default function SpecsCalculator({
               <div className="mt-1">
                 <div className="flex items-baseline gap-1">
                   <span className="text-lg font-bold font-mono tracking-tight text-slate-900">{fillingRate.toFixed(1)}%</span>
-                  <span className="text-slate-450 text-[9px]">filled</span>
+                  <span className="text-slate-500 text-[9px]">filled</span>
                 </div>
                 {/* Custom nice visual progress tracking gauge */}
                 <div className="w-full bg-slate-100 h-1 rounded-full mt-1.5 overflow-hidden">
                   <div
-                    className={`h-full rounded-full transition-all duration-550 ${fillingRate >= 99 ? 'bg-emerald-500' : fillingRate >= 70 ? 'bg-amber-500' : 'bg-rose-500'}`}
+                    className={`h-full rounded-full transition-all duration-500 ${fillingRate >= 99 ? 'bg-emerald-500' : fillingRate >= 70 ? 'bg-amber-500' : 'bg-rose-500'}`}
                     style={{ width: `${Math.min(fillingRate, 100)}%` }}
                   ></div>
                 </div>
@@ -1091,20 +1143,20 @@ export default function SpecsCalculator({
                 Feasibility Strategy
               </h3>
             </div>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-650 font-semibold bg-slate-50 border border-slate-200 px-2.5 py-0.5 rounded-md shadow-xs">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-600 font-semibold bg-slate-50 border border-slate-200 px-2.5 py-0.5 rounded-md shadow-xs">
               <div className="flex items-center gap-1.5">
                 <span className="text-slate-500 font-medium">Cheapest First Model:</span>
-                <span className="font-mono text-indigo-750 font-bold">${totalCostCostOpt.toLocaleString()}</span>
+                <span className="font-mono text-indigo-700 font-bold">${totalCostCostOpt.toLocaleString()}</span>
               </div>
               <span className="text-slate-300 hidden md:inline">|</span>
               <div className="flex items-center gap-1.5">
                 <span className="text-slate-500 font-medium">Tier Vetting Model:</span>
-                <span className="font-mono text-indigo-750 font-bold">${totalCostTierOpt.toLocaleString()}</span>
+                <span className="font-mono text-indigo-700 font-bold">${totalCostTierOpt.toLocaleString()}</span>
               </div>
               <span className="text-slate-300 hidden md:inline">|</span>
               <div className="flex items-center gap-1.5">
                 <span className="text-slate-500 font-medium font-bold">No internal sample:</span>
-                <span className="font-mono text-indigo-750 font-bold">${totalCostNoInternalOpt.toLocaleString()}</span>
+                <span className="font-mono text-indigo-700 font-bold">${totalCostNoInternalOpt.toLocaleString()}</span>
               </div>
             </div>
           </div>
@@ -1130,19 +1182,19 @@ export default function SpecsCalculator({
               <div className="flex bg-slate-100 p-0.5 rounded-md self-start">
                 <button
                   onClick={() => onChangeStrategy('cost')}
-                  className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition duration-150 cursor-pointer ${activeStrategy === 'cost' ? 'bg-[#2b6cb0] text-white shadow-sm' : 'text-slate-550 hover:text-slate-900'}`}
+                  className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition duration-150 cursor-pointer ${activeStrategy === 'cost' ? 'bg-[#2b6cb0] text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
                 >
                   Cost Optimized (Cheapest)
                 </button>
                 <button
                   onClick={() => onChangeStrategy('tier')}
-                  className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition duration-150 cursor-pointer ${activeStrategy === 'tier' ? 'bg-[#2b6cb0] text-white shadow-sm' : 'text-slate-550 hover:text-slate-900'}`}
+                  className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition duration-150 cursor-pointer ${activeStrategy === 'tier' ? 'bg-[#2b6cb0] text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
                 >
                   Tier Priority (Quality)
                 </button>
                 <button
                   onClick={() => onChangeStrategy('no-internal-cost')}
-                  className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition duration-150 cursor-pointer ${activeStrategy === 'no-internal-cost' ? 'bg-[#2b6cb0] text-white shadow-sm' : 'text-slate-550 hover:text-slate-900'}`}
+                  className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition duration-150 cursor-pointer ${activeStrategy === 'no-internal-cost' ? 'bg-[#2b6cb0] text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
                 >
                   No internal sample
                 </button>
@@ -1198,7 +1250,7 @@ export default function SpecsCalculator({
 
             <button
               onClick={handleToggleOverview}
-              className="p-1 hover:bg-slate-150 text-slate-400 hover:text-slate-700 rounded-lg transition-all duration-150 cursor-pointer"
+              className="p-1 hover:bg-slate-100 text-slate-400 hover:text-slate-700 rounded-lg transition-all duration-150 cursor-pointer"
               id="toggle-overview-btn"
               title={showOverview ? "Hide Feasibility Overview" : "Unhide Feasibility Overview"}
             >
@@ -1217,10 +1269,10 @@ export default function SpecsCalculator({
               </div>
             )}
 
-        {!hasChecked && pitches.length > 0 && (
+        {!liveFeasibility && !hasChecked && pitches.length > 0 && (
           <div className="bg-amber-50 border-b border-amber-200 p-3.5 text-xs text-amber-900 flex items-center justify-between gap-4">
             <div className="flex items-center gap-2">
-              <AlertCircle className="h-4 w-4 text-amber-650 shrink-0 animate-bounce" />
+              <AlertCircle className="h-4 w-4 text-amber-600 shrink-0 animate-bounce" />
               <span>
                 <strong>Needs Feasibility Check</strong>: Loaded or edited specifications need verification. Click <strong>Check Feasibility</strong> to determine correct allocations.
               </span>
@@ -1244,9 +1296,9 @@ export default function SpecsCalculator({
               <tr className="bg-slate-50 text-slate-600 border-b border-slate-100 font-semibold uppercase tracking-wider text-[10px]">
                 <th className="p-2 col-static">Country</th>
                 <th className="p-2 col-static text-right">Target Size</th>
-                <th className="p-2 col-static text-center">LOI</th>
-                <th className="p-2 col-static text-center">IR%</th>
                 <th className="p-2 col-static text-center">IR Universe</th>
+                <th className="p-2 col-static text-center">IR%</th>
+                <th className="p-2 col-static text-center">LOI</th>
                 <th className="p-2 col-static text-center">Quotas</th>
                 <th className="p-2 col-static">Feasibility Status</th>
                 <th className="p-2 col-output text-right text-[#2b6cb0]">feasible</th>
@@ -1256,8 +1308,8 @@ export default function SpecsCalculator({
                 {/* NEW REQUIRED COLUMNS */}
                 <th className="p-2 col-output text-right text-[#205080]" title="Un-penalized Specs Potential Max limit">max feasible</th>
                 <th className="p-2 col-output text-center text-slate-800" title="Internal % / Vendors %">Internal/Ext Share</th>
-                <th className="p-2 col-output text-center text-slate-705 font-bold" title="Number of external vendors utilized">Nr of vendors</th>
-                <th className="p-2 col-output text-right text-emerald-850 font-bold" title="Total external vendor spend divided by total external vendor sample">Weighted CPI</th>
+                <th className="p-2 col-output text-center text-slate-700 font-bold" title="Number of external vendors utilized">Nr of vendors</th>
+                <th className="p-2 col-output text-right text-emerald-800 font-bold" title="Total external vendor spend divided by total external vendor sample">Weighted CPI</th>
                 <th className="p-2 col-output text-right text-indigo-950 font-bold">Targeted CPI</th>
                 <th className="p-2 col-output text-right text-[#2b6cb0]" title="Project Manager Fee. Double click to override flat fee.">PM Fee</th>
                 <th className="p-2 col-output text-center">Comparability</th>
@@ -1311,7 +1363,8 @@ export default function SpecsCalculator({
                 const isEditingSalesCpi = editingCell?.rowId === pitch.id && editingCell?.field === 'salesCpi';
                 const isEditingComp = editingCell?.rowId === pitch.id && editingCell?.field === 'comparability';
 
-                const pitchSpecs = getCountrySpecsByUniverse(pitch.market, pitch.irUniverse, insertedDatabase);
+                const irStr = pitch.irPercent && pitch.irPercent > 0 ? `${Math.round(pitch.irPercent * 100)}%` : undefined;
+                const pitchSpecs = getCountrySpecsByUniverse(pitch.market, pitch.irUniverse, insertedDatabase, irStr, pitch.loi);
 
                 // Informative helper indicating why a row has deficit / 0 allocation / unfilled status
                 const getUnfeasibleReason = (p: FeasibilityRow, specs: any): string => {
@@ -1334,7 +1387,12 @@ export default function SpecsCalculator({
                       return 'Universe not found in database for this country';
                     }
                   }
-                  const totalCap = (p.internal || 0) + (p.vendor1 || 0) + (p.vendor2 || 0) + (p.vendor3 || 0) + (p.vendor4 || 0);
+                  let totalCap = Number(p.internal || 0);
+                  for (const k of Object.keys(p)) {
+                    if (/^vendor\d+$/i.test(k)) {
+                      totalCap += Number((p as any)[k] || 0);
+                    }
+                  }
                   if (totalCap === 0) {
                     return 'Capacity is 0 in database for specified parameters';
                   }
@@ -1357,6 +1415,7 @@ export default function SpecsCalculator({
                         preExistingOptions={activeDbCountries}
                         specType="country"
                         placeholder="Insert country"
+                        disabled={!!pitch.isLocked}
                         displayValue={
                           <div className="flex items-center gap-1.5">
                             <span className={isValidCountry(pitch.market) ? 'text-slate-900 font-bold' : 'text-slate-400 italic font-normal'}>
@@ -1397,22 +1456,23 @@ export default function SpecsCalculator({
                       )}
                     </td>
 
-                    {/* LOI (Editable combobox with 1..100 range, green DB ones, grey others) */}
-                    <td className="p-2 col-static font-mono text-center">
+                    {/* IR Universe (Editable combobox with country variables) */}
+                    <td className="p-2 col-static font-medium text-slate-700 max-w-[130px]" title={pitch.irUniverse}>
                       <ComboboxCell
-                        value={pitch.loi && pitch.loi > 0 ? pitch.loi : ''}
-                        onSave={(val) => handleCellSave(pitch.id, 'loi', val)}
-                        options={pitchSpecs.loiDropdownOptions}
-                        preExistingOptions={pitchSpecs.preExistingLois}
-                        specType="loi"
-                        placeholder="Insert LOI"
-                        displayValue={pitch.loi && pitch.loi > 0 ? `${pitch.loi}m` : undefined}
-                        align="center"
-                        widthClass="w-20"
+                        value={pitch.irUniverse}
+                        onSave={(val) => handleCellSave(pitch.id, 'irUniverse', val)}
+                        options={pitchSpecs.universeDropdownOptions}
+                        preExistingOptions={pitchSpecs.preExistingUniverses}
+                        specType="universe"
+                        placeholder="Insert universe"
+                        disabled={!!pitch.isLocked}
+                        displayValue={pitch.irUniverse ? <span className="truncate max-w-[110px] inline-block align-middle">{pitch.irUniverse}</span> : undefined}
+                        align="left"
+                        widthClass="w-40"
                       />
                     </td>
 
-                    {/* IR% (Editable combobox with 1%..100% range, green DB ones, grey others) */}
+                    {/* IR% (Editable combobox with 1%..100% range, green DB ones, light grey non-DB) */}
                     <td className="p-2 col-static font-mono text-center font-bold text-emerald-950">
                       <ComboboxCell
                         value={pitch.irPercent && pitch.irPercent > 0 ? `${Math.round(pitch.irPercent * 100)}%` : ''}
@@ -1421,24 +1481,26 @@ export default function SpecsCalculator({
                         preExistingOptions={pitchSpecs.preExistingIrs}
                         specType="ir"
                         placeholder="Insert incidence"
+                        disabled={!!pitch.isLocked}
                         displayValue={pitch.irPercent && pitch.irPercent > 0 ? `${Math.round(pitch.irPercent * 100)}%` : undefined}
                         align="center"
                         widthClass="w-20"
                       />
                     </td>
 
-                    {/* IR Universe (Editable combobox with country variables) */}
-                    <td className="p-2 col-static font-medium text-slate-750 max-w-[130px]" title={pitch.irUniverse}>
+                    {/* LOI (Editable combobox with 1..100 range, green DB ones, light grey non-DB) */}
+                    <td className="p-2 col-static font-mono text-center">
                       <ComboboxCell
-                        value={pitch.irUniverse}
-                        onSave={(val) => handleCellSave(pitch.id, 'irUniverse', val)}
-                        options={pitchSpecs.universeDropdownOptions}
-                        preExistingOptions={pitchSpecs.preExistingUniverses}
-                        specType="universe"
-                        placeholder="Insert universe"
-                        displayValue={pitch.irUniverse ? <span className="truncate max-w-[110px] inline-block align-middle">{pitch.irUniverse}</span> : undefined}
-                        align="left"
-                        widthClass="w-40"
+                        value={pitch.loi && pitch.loi > 0 ? pitch.loi : ''}
+                        onSave={(val) => handleCellSave(pitch.id, 'loi', val)}
+                        options={pitchSpecs.loiDropdownOptions}
+                        preExistingOptions={pitchSpecs.preExistingLois}
+                        specType="loi"
+                        placeholder="Insert LOI"
+                        disabled={!!pitch.isLocked}
+                        displayValue={pitch.loi && pitch.loi > 0 ? `${pitch.loi}m` : undefined}
+                        align="center"
+                        widthClass="w-20"
                       />
                     </td>
 
@@ -1451,6 +1513,7 @@ export default function SpecsCalculator({
                         preExistingOptions={pitchSpecs.preExistingQuotas}
                         specType="quota"
                         placeholder="Insert quotas"
+                        disabled={!!pitch.isLocked}
                         displayValue={pitch.quotas ? <span className="truncate max-w-[130px] inline-block align-middle">{pitch.quotas}</span> : undefined}
                         align="left"
                         widthClass="w-44"
@@ -1527,7 +1590,7 @@ export default function SpecsCalculator({
                     {/* Allocated totals and deficits */}
                     <td
                       className={`p-2 text-right font-mono font-bold col-output ${
-                        alloc.status === 'Oversample' ? 'text-purple-750' : 'text-[#2b6cb0]'
+                        alloc.status === 'Oversample' ? 'text-purple-700' : 'text-[#2b6cb0]'
                       } ${alloc.totalAllocated === 0 ? 'cursor-help' : ''}`}
                     >
                       {alloc.totalAllocated === 0 ? (
@@ -1562,7 +1625,7 @@ export default function SpecsCalculator({
                       className={`p-2 text-right font-mono ${alloc.unfilledSample > 0 ? 'text-rose-600 font-bold' : 'text-slate-400'} col-output`}
                       title={alloc.unfilledSample > 0 ? `${pitch.totalSampleSize > 0 ? Math.round((alloc.unfilledSample / pitch.totalSampleSize) * 100) : 0}% deficit` : '0% missing'}
                     >
-                      {pitch.totalSampleSize > 0 ? `${Math.round((alloc.unfilledSample / pitch.totalSampleSize) * 100)}%` : '0%'}
+                      {pitch.totalSampleSize > 0 ? `${Math.round((Math.max(0, alloc.unfilledSample) / pitch.totalSampleSize) * 100)}%` : '0%'}
                     </td>
 
                     {/* NEW METRICS ON THE RIGHT */}
@@ -1602,9 +1665,24 @@ export default function SpecsCalculator({
                         </div>
                       ) : (
                         <div className="inline-flex items-center justify-center">
-                          <span className={`font-semibold text-indigo-700 border-b border-dashed border-slate-300 hover:border-indigo-600 ${pitch.internalPctOverride !== undefined ? 'bg-indigo-50 px-1 rounded text-indigo-900 font-bold' : ''}`}>
-                            {alloc.internalSharePct}%{pitch.internalPctOverride !== undefined ? ' *' : ''}
-                          </span>
+                          {(() => {
+                            const overlapPct = pitch.overlapVariable !== undefined ? pitch.overlapVariable : (alloc.overlapPenaltyPct || 0);
+                            const internalMaxCap = Math.round((pitch.internal || 0) * (1 - overlapPct / 100));
+                            const isInternalOver = (alloc.allocatedInternal || 0) > internalMaxCap;
+                            return (
+                              <span
+                                className={`font-semibold border-b border-dashed border-slate-300 hover:border-indigo-600 ${
+                                  isInternalOver
+                                    ? 'bg-red-50 px-1 rounded text-red-700 font-bold'
+                                    : pitch.internalPctOverride !== undefined
+                                      ? 'bg-indigo-50 px-1 rounded text-indigo-900 font-bold'
+                                      : 'text-indigo-700'
+                                }`}
+                              >
+                                {alloc.internalSharePct}%{pitch.internalPctOverride !== undefined ? ' *' : ''}
+                              </span>
+                            );
+                          })()}
                           <span className="text-slate-300 mx-1">/</span>
                           <span className="font-semibold text-emerald-700">{alloc.externalSharePct}%</span>
                         </div>
@@ -1612,7 +1690,7 @@ export default function SpecsCalculator({
                     </td>
 
                     {/* 3. Used Vendors list (Nr of vendors) */}
-                    <td className="p-2 text-center font-mono font-bold text-slate-750 col-output">
+                    <td className="p-2 text-center font-mono font-bold text-slate-700 col-output">
                       {alloc.numVendorsUsed}
                     </td>
 
@@ -1632,7 +1710,7 @@ export default function SpecsCalculator({
                           )}
                           {pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? (
                             alloc.weightedCpi > pitch.targetedCpi ? (
-                              <span className="text-red-650 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded font-mono font-bold tracking-tight text-right block">
+                              <span className="text-red-700 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded font-mono font-bold tracking-tight text-right block">
                                 ${alloc.weightedCpi.toFixed(2)}
                               </span>
                             ) : (
@@ -1667,7 +1745,7 @@ export default function SpecsCalculator({
                         startEditing(pitch.id, 'targetedCpi', pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? pitch.targetedCpi : '');
                       }}
                       onDoubleClick={() => startEditing(pitch.id, 'targetedCpi', pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? pitch.targetedCpi : '')}
-                      title={alloc.hasLoiMarkup ? alloc.loiMarkupNote : (pitch.targetedCpi ? `Targeted CPI: ${pitch.targetedCpi.toFixed(2)}` : 'Click or double click to edit Targeted CPI')}
+                      title={alloc.hasLoiMarkup ? alloc.loiMarkupNote : (pitch.targetedCpi ? `Targeted CPI: $${pitch.targetedCpi.toFixed(2)}` : 'Click or double click to edit Targeted CPI')}
                     >
                       {editingCell?.rowId === pitch.id && editingCell?.field === 'targetedCpi' ? (
                         <input
@@ -1682,9 +1760,9 @@ export default function SpecsCalculator({
                         />
                       ) : (
                         <span
-                           className="cursor-pointer border-b border-dashed border-slate-205 hover:border-[#2b6cb0] font-semibold text-slate-705"
+                           className="cursor-pointer border-b border-dashed border-slate-200 hover:border-[#2b6cb0] font-semibold text-slate-700"
                         >
-                          {pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? `${pitch.targetedCpi.toFixed(2)}` : '-'}
+                          {pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? `$${pitch.targetedCpi.toFixed(2)}` : '-'}
                         </span>
                       )}
                     </td>
@@ -1725,7 +1803,7 @@ export default function SpecsCalculator({
                           }}
                           onBlur={() => setEditingCell(null)}
                           autoFocus
-                          className="px-1 border border-slate-350 rounded bg-white"
+                          className="px-1 border border-slate-300 rounded bg-white"
                         >
                           <option value="High">High</option>
                           <option value="Medium">Medium</option>
@@ -1736,7 +1814,7 @@ export default function SpecsCalculator({
                           onDoubleClick={() => startEditing(pitch.id, 'comparability', pitch.comparability || 'High')}
                           className={`cursor-pointer px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
                             (pitch.comparability || 'High') === 'High' ? 'bg-[#ebf8ff] text-[#2b6cb0] border border-[#bee3f8]' :
-                            (pitch.comparability === 'Medium') ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-rose-50 text-rose-805 border border-rose-200'
+                            (pitch.comparability === 'Medium') ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
                           }`}
                           title="Double-click to change Comparability"
                         >

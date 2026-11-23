@@ -6,9 +6,8 @@ __pycache__/
 # C extensions
 *.so
 
-# Original AI Studio export (kept locally for reference only)
-feasibility_initial/
-feasibility_initial_new/
+# AI Studio exports (kept locally for reference only; they contain a Firebase config)
+feasibility_initial*/
 # Frontend (Node) - the build output in feasibility/static IS committed
 node_modules/
 

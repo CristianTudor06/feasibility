@@ -93,7 +93,7 @@ export function parseCSVToPitches(csvText: string): FeasibilityRow[] {
     };
 
     const cleanPercent = (val: string): number => {
-      if (!val) return 0.20; // fallback standard incidence
+      if (!val || !val.trim()) return 0;
       if (val.includes('%')) {
         return cleanNumber(val) / 100;
       }
@@ -101,17 +101,19 @@ export function parseCSVToPitches(csvText: string): FeasibilityRow[] {
       return num > 1 ? num / 100 : num;
     };
 
+    const rawUniverse = (cols[irUnivIdx] || cols[targetIdx] || '').trim();
+
     const rowObj: any = {
       id: `row-csv-${i}-${Date.now()}`,
       pitchName: cols[pitchIdx] || `Pitch ${i}`,
       source: cols[sourceIdx] || 'Custom Upload',
       option: cols[optionIdx] || '1',
-      market: cols[marketIdx] || 'Global',
-      target: cols[targetIdx] || 'Gen Pop',
-      loi: cleanNumber(cols[loiIdx]) || 10,
+      market: (cols[marketIdx] || '').trim(),
+      target: (cols[targetIdx] || rawUniverse).trim(),
+      loi: cleanNumber(cols[loiIdx]),
       irPercent: cleanPercent(cols[irIdx]),
-      irUniverse: cols[irUnivIdx] || 'General Population',
-      quotas: cols[quotasIdx] || 'No quotas',
+      irUniverse: rawUniverse,
+      quotas: (cols[quotasIdx] || '').trim() || 'No quotas',
       waves: cleanNumber(cols[wavesIdx]) || 1,
       totalFreshSample: cleanNumber(cols[freshIdx]),
       totalSampleSize: cleanNumber(cols[totalIdx]) || cleanNumber(cols[freshIdx]),

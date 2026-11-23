@@ -3,8 +3,11 @@ import { FeasibilityRow, AllocationResult, ChatMessage, StrategyType, VendorTier
 import { ALL_COUNTRIES, getCanonicalCountryName, isValidCountry } from '../data/countries';
 import { findBestDbMatches, normalizeLoi, normalizeIr } from '../lib/matching';
 import { calculateRowAllocation, deduplicateDbRows } from '../lib/calculator';
-import { DEFAULT_VENDORS, DEFAULT_PITCHES } from '../data/defaultData';
-import { getCountrySpecsByUniverse, ATTACHED_REFERENCE_SPECS, ALL_DB_COUNTRIES, getDbCountries } from '../data/attachedSpecsData';
+import { DEFAULT_VENDORS } from '../data/defaultData';
+import { getCountrySpecsByUniverse, getCountryPreExistingSpecs, ATTACHED_REFERENCE_SPECS, ALL_DB_COUNTRIES, getDbCountries } from '../data/attachedSpecsData';
+import { ATTACHED_VENDOR_TIERS, getAuthoritativeVendorConfig } from '../data/vendorTiersData';
+import { parseNaturalLanguageSpecs } from '../lib/chatParser';
+import { processRuleBasedQuery } from '../lib/ruleEngine';
 import ComboboxCell from './ComboboxCell';
 import { 
   Bot, 
@@ -28,11 +31,13 @@ interface ChatPaneProps {
   allocations: AllocationResult[];
   activeStrategy: string;
   vendors?: VendorTier[];
+  vendorOverrides?: Record<string, VendorTier>;
   onUpdatePitches?: (updated: FeasibilityRow[], preserveHasChecked?: boolean) => void;
   // Lifted state props for continuous history support
   messages: ChatMessage[];
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
   onUpdateStrategy?: (strategy: StrategyType) => void;
+  onRunCheapestWithMode?: (mode: 'reset' | 'keep') => void;
   // Floating support parameters
   isFloating?: boolean;
   isOpen?: boolean;
@@ -45,10 +50,12 @@ export default function ChatPane({
   allocations,
   activeStrategy,
   vendors = [],
+  vendorOverrides = {},
   onUpdatePitches,
   messages,
   setMessages,
   onUpdateStrategy,
+  onRunCheapestWithMode,
   isFloating = false,
   isOpen = true,
   onClose
@@ -160,20 +167,22 @@ export default function ChatPane({
     return countrySpecs.preExistingUniverses[0] || 'gen pop';
   });
 
-  const pitchSpecs = useMemo(() => {
-    return getCountrySpecsByUniverse(selectedCountry, selectedUniverse, insertedDatabase || undefined);
-  }, [selectedCountry, selectedUniverse, insertedDatabase]);
+  const initialUniSpecs = getCountrySpecsByUniverse(selectedCountry, selectedUniverse, insertedDatabase || undefined);
+  const initialDefaultIr = initialUniSpecs.preExistingIrs[0] || initialUniSpecs.irDropdownOptions[0] || '30%';
+
+  const [selectedIr, setSelectedIr] = useState<string>(() => initialDefaultIr);
 
   const [selectedLoi, setSelectedLoi] = useState<number>(() => {
-    return pitchSpecs.loiDropdownOptions[0] || 15;
+    const firstIrSpecs = getCountrySpecsByUniverse(selectedCountry, selectedUniverse, insertedDatabase || undefined, initialDefaultIr);
+    return firstIrSpecs.preExistingLois[0] || firstIrSpecs.loiDropdownOptions[0] || 15;
   });
 
-  const [selectedIr, setSelectedIr] = useState<string>(() => {
-    return pitchSpecs.irDropdownOptions[0] || '30%';
-  });
+  const pitchSpecs = useMemo(() => {
+    return getCountrySpecsByUniverse(selectedCountry, selectedUniverse, insertedDatabase || undefined, selectedIr, selectedLoi);
+  }, [selectedCountry, selectedUniverse, insertedDatabase, selectedIr, selectedLoi]);
 
   const [selectedQuotas, setSelectedQuotas] = useState<string>(() => {
-    return pitchSpecs.quotaDropdownOptions[0] || 'No quotas';
+    return pitchSpecs.preExistingQuotas[0] || pitchSpecs.quotaDropdownOptions[0] || 'No quotas';
   });
 
   const [targetedCpi, setTargetedCpi] = useState<string>('');
@@ -183,32 +192,41 @@ export default function ChatPane({
     const canonical = getCanonicalCountryName(newCountry) || newCountry;
     setSelectedCountry(canonical);
     const specs = getCountrySpecsByUniverse(canonical, undefined, insertedDatabase || undefined);
-    const newUni = specs.preExistingUniverses[0] || 'gen pop';
+    const newUni = specs.preExistingUniverses[0] || '';
     setSelectedUniverse(newUni);
     const uniSpecs = getCountrySpecsByUniverse(canonical, newUni, insertedDatabase || undefined);
-    if (uniSpecs.loiDropdownOptions.length > 0) setSelectedLoi(uniSpecs.loiDropdownOptions[0]);
-    if (uniSpecs.irDropdownOptions.length > 0) setSelectedIr(uniSpecs.irDropdownOptions[0]);
-    if (uniSpecs.quotaDropdownOptions.length > 0) setSelectedQuotas(uniSpecs.quotaDropdownOptions[0]);
+    const nextIr = uniSpecs.preExistingIrs[0] || '';
+    setSelectedIr(nextIr);
+    const irSpecs = getCountrySpecsByUniverse(canonical, newUni, insertedDatabase || undefined, nextIr);
+    const nextLoi = irSpecs.preExistingLois[0] || 0;
+    setSelectedLoi(nextLoi);
+    const finalSpecs = getCountrySpecsByUniverse(canonical, newUni, insertedDatabase || undefined, nextIr, nextLoi);
+    setSelectedQuotas(finalSpecs.preExistingQuotas[0] || 'No quotas');
   };
 
   const handleUniverseChange = (newUni: string) => {
-    setSelectedUniverse(newUni);
-    const uniSpecs = getCountrySpecsByUniverse(selectedCountry, newUni, insertedDatabase || undefined);
-    if (uniSpecs.loiDropdownOptions.length > 0 && !uniSpecs.loiDropdownOptions.includes(Number(selectedLoi))) {
-      setSelectedLoi(uniSpecs.loiDropdownOptions[0]);
-    }
-    if (uniSpecs.irDropdownOptions.length > 0 && !uniSpecs.irDropdownOptions.includes(selectedIr)) {
-      setSelectedIr(uniSpecs.irDropdownOptions[0]);
-    }
-    if (uniSpecs.quotaDropdownOptions.length > 0 && !uniSpecs.quotaDropdownOptions.includes(selectedQuotas)) {
-      setSelectedQuotas(uniSpecs.quotaDropdownOptions[0]);
+    const cleanUni = String(newUni || '').toLowerCase().startsWith('insert') ? '' : newUni.trim();
+    setSelectedUniverse(cleanUni);
+    const uniSpecs = getCountrySpecsByUniverse(selectedCountry, cleanUni, insertedDatabase || undefined);
+    const nextIr = uniSpecs.preExistingIrs.length > 0 && uniSpecs.preExistingIrs.includes(selectedIr)
+      ? selectedIr
+      : (uniSpecs.preExistingIrs[0] || selectedIr);
+    if (nextIr !== selectedIr) setSelectedIr(nextIr);
+    const irSpecs = getCountrySpecsByUniverse(selectedCountry, cleanUni, insertedDatabase || undefined, nextIr);
+    const nextLoi = irSpecs.preExistingLois.length > 0 && irSpecs.preExistingLois.includes(Number(selectedLoi))
+      ? Number(selectedLoi)
+      : (irSpecs.preExistingLois[0] || Number(selectedLoi));
+    if (nextLoi !== selectedLoi) setSelectedLoi(nextLoi);
+    const finalSpecs = getCountrySpecsByUniverse(selectedCountry, cleanUni, insertedDatabase || undefined, nextIr, nextLoi);
+    if (finalSpecs.preExistingQuotas.length > 0 && !finalSpecs.preExistingQuotas.includes(selectedQuotas)) {
+      setSelectedQuotas(finalSpecs.preExistingQuotas[0]);
     }
   };
 
   const handleInstantCheck = () => {
-    const numTarget = Number(targetSize) || 1000;
-    const numLoi = Number(selectedLoi) || 15;
-    const rawIr = selectedIr || '30%';
+    const numTarget = Number(targetSize) || 0;
+    const numLoi = Number(selectedLoi) || 0;
+    const rawIr = selectedIr || '0%';
     const numTargetedCpi = targetedCpi.trim() !== '' ? parseFloat(targetedCpi) : undefined;
 
     executeQueryCalculation({
@@ -243,16 +261,16 @@ export default function ChatPane({
       source: 'Chat Assistant Query',
       option: String(pitches.length + 1),
       market: specs.country,
-      target: specs.universe || 'gen pop',
+      target: specs.universe || '',
       loi: normLoi,
       irPercent: normIr,
-      irUniverse: specs.universe || 'gen pop',
+      irUniverse: specs.universe || '',
       quotas: specs.quotas || 'No quotas',
       waves: 1,
       totalFreshSample: specs.targetSize,
       totalSampleSize: specs.targetSize,
       internal: 0,
-      maxInternalPercent: specs.maxInternalPercent !== undefined ? specs.maxInternalPercent : 100,
+      maxInternalPercent: specs.maxInternalPercent !== undefined && specs.maxInternalPercent < 100 ? specs.maxInternalPercent : undefined,
       vendor1: 0,
       vendor1Cpi: 0,
       vendor2: 0,
@@ -288,7 +306,6 @@ export default function ChatPane({
           totalFreshSample: 1000,
           totalSampleSize: 1000,
           internal: 3000,
-          maxInternalPercent: 100,
           vendor1: 2000,
           vendor1Cpi: 4.5,
           vendor2: 1200,
@@ -307,13 +324,88 @@ export default function ChatPane({
         }));
 
     const matches = findBestDbMatches(queryRow, deduplicateDbRows(dbPool), new Set<string>());
-    const activeVendorsList = vendors && vendors.length > 0 ? vendors : DEFAULT_VENDORS;
+    const uiVendorsList = vendors && vendors.length > 0 ? vendors : DEFAULT_VENDORS;
+
+    // Build complete backend vendor pool (1..166+) independent of narrowed UI vendor columns,
+    // preserving Partner Mapping overrides (including persisted Do not use / Red bans) by vendor name.
+    const vendorOverrideMap = new Map<string, VendorTier>();
+    Object.entries(vendorOverrides || {}).forEach(([k, v]) => {
+      vendorOverrideMap.set(k.toLowerCase().trim(), v);
+    });
+    (vendors || []).forEach(v => {
+      const k = v.name.toLowerCase().trim();
+      if (!vendorOverrideMap.has(k)) {
+        vendorOverrideMap.set(k, v);
+      }
+    });
+    const maxVendorNumInDb = dbPool.reduce((maxNum, row) => {
+      let rowMax = maxNum;
+      for (const k of Object.keys(row)) {
+        const m = k.match(/^vendor(\d+)$/i);
+        if (m) {
+          const n = parseInt(m[1], 10);
+          if (n > rowMax) rowMax = n;
+        }
+      }
+      return rowMax;
+    }, ATTACHED_VENDOR_TIERS.length);
+
+    const isVendorBanned = (v: VendorTier): boolean => {
+      const tierLower = String(v.tier || '').toLowerCase();
+      const colorLower = String(v.color || '').toLowerCase();
+      return tierLower.includes('do not use') || colorLower === 'red';
+    };
+
+    const pTierVal = (tierStr: string): number => {
+      const t = String(tierStr || '').toLowerCase();
+      if (t.includes('do not use')) return 999;
+      if (t.includes('0') || t.includes('prime')) return 0;
+      if (t.includes('1')) return 1;
+      if (t.includes('2')) return 2;
+      if (t.includes('3')) return 3;
+      return 4;
+    };
+
+    const pColorVal = (colorStr: string): number => {
+      const c = String(colorStr || '').toLowerCase();
+      if (c.includes('red')) return 999;
+      if (c.includes('green')) return 1;
+      if (c.includes('yellow')) return 2;
+      if (c.includes('orange')) return 3;
+      if (c.includes('grey') || c.includes('gray')) return 4;
+      return 5;
+    };
+
+    const fullVendorEntries: { dbNum: number; config: VendorTier }[] = [];
+    for (let num = 1; num <= maxVendorNumInDb; num++) {
+      const nameKey = `vendor ${num}`;
+      const override = vendorOverrideMap.get(nameKey);
+      const cfg: VendorTier = override
+        ? { ...override, isAddedManually: false }
+        : getAuthoritativeVendorConfig(num);
+      if (!isVendorBanned(cfg)) {
+        fullVendorEntries.push({ dbNum: num, config: cfg });
+      }
+    }
+
+    fullVendorEntries.sort((a, b) => {
+      const tA = pTierVal(a.config.tier);
+      const tB = pTierVal(b.config.tier);
+      if (tA !== tB) return tA - tB;
+      const cA = pColorVal(a.config.color);
+      const cB = pColorVal(b.config.color);
+      if (cA !== cB) return cA - cB;
+      return a.dbNum - b.dbNum;
+    });
+
+    const fullVendorsList = fullVendorEntries.map(e => e.config);
+    const calcRow: any = { ...queryRow };
 
     if (matches.length > 0) {
       const deduplicatedMatches = deduplicateDbRows(matches);
       let aggregatedInternal = 0;
-      const aggregatedVendors: { [vIdx: number]: number } = {};
-      const aggregatedVendorCpis: { [vIdx: number]: number } = {};
+      const aggregatedByDbNum: { [dbNum: number]: number } = {};
+      const aggregatedCpiByDbNum: { [dbNum: number]: number } = {};
 
       deduplicatedMatches.forEach(mr => {
         // IR reduction factor: if incidence requested is lower by up to -10%,
@@ -324,11 +416,8 @@ export default function ChatPane({
           aggregatedInternal = reducedInternal;
         }
 
-        for (let idx = 0; idx < activeVendorsList.length; idx++) {
-          const vIdx = idx + 1;
-          const vendorObj = activeVendorsList[idx];
-          const matchNum = vendorObj.name.toLowerCase().match(/\d+/);
-          const vendorNumInDb = matchNum ? parseInt(matchNum[0], 10) : vIdx;
+        for (const entry of fullVendorEntries) {
+          const vendorNumInDb = entry.dbNum;
           const dbCapKey = `vendor${vendorNumInDb}`;
           const dbCpiKey = `vendor${vendorNumInDb}Cpi`;
 
@@ -343,41 +432,65 @@ export default function ChatPane({
           const vendorCap = Math.round(rawCap * reductionFactor);
 
           // Across lines, vendors are NOT duplicated: take highest capacity and best CPI
-          const existCap = aggregatedVendors[vIdx] || 0;
-          const existCpi = aggregatedVendorCpis[vIdx] || 0;
+          const existCap = aggregatedByDbNum[vendorNumInDb] || 0;
+          const existCpi = aggregatedCpiByDbNum[vendorNumInDb] || 0;
 
           if (vendorCap > existCap) {
-            aggregatedVendors[vIdx] = vendorCap;
+            aggregatedByDbNum[vendorNumInDb] = vendorCap;
             if (cpiVal > 0) {
-              aggregatedVendorCpis[vIdx] = cpiVal;
+              aggregatedCpiByDbNum[vendorNumInDb] = cpiVal;
             }
           } else if (vendorCap === existCap && vendorCap > 0 && cpiVal > 0 && (existCpi === 0 || cpiVal < existCpi)) {
-            aggregatedVendorCpis[vIdx] = cpiVal;
+            aggregatedCpiByDbNum[vendorNumInDb] = cpiVal;
           }
         }
       });
 
       queryRow.internal = aggregatedInternal;
+      calcRow.internal = aggregatedInternal;
+
       const matchWithLoiMarkup = deduplicatedMatches.find(mr => mr._matchMetadata?.hasLoiMarkup);
       if (matchWithLoiMarkup) {
         queryRow.hasLoiMarkup = true;
         queryRow.loiDiff = matchWithLoiMarkup._matchMetadata?.loiDiff;
         queryRow.matchedDbLoi = matchWithLoiMarkup._matchMetadata?.matchedDbLoi;
+        calcRow.hasLoiMarkup = true;
+        calcRow.loiDiff = queryRow.loiDiff;
+        calcRow.matchedDbLoi = queryRow.matchedDbLoi;
       }
 
       const matchWithIrReduction = deduplicatedMatches.find(mr => (mr._matchMetadata?.irReductionPct || 0) > 0);
       if (matchWithIrReduction) {
         queryRow.irReductionPct = matchWithIrReduction._matchMetadata?.irReductionPct;
+        calcRow.irReductionPct = queryRow.irReductionPct;
       }
 
-      for (let idx = 0; idx < activeVendorsList.length; idx++) {
+      // Populate calcRow across all 1..166+ non-banned vendors in priority order
+      for (let idx = 0; idx < fullVendorEntries.length; idx++) {
         const vIdx = idx + 1;
-        (queryRow as any)[`vendor${vIdx}`] = aggregatedVendors[vIdx] || 0;
-        (queryRow as any)[`vendor${vIdx}Cpi`] = aggregatedVendorCpis[vIdx] || 0;
+        const dbNum = fullVendorEntries[idx].dbNum;
+        calcRow[`vendor${vIdx}`] = aggregatedByDbNum[dbNum] || 0;
+        calcRow[`vendor${vIdx}Cpi`] = aggregatedCpiByDbNum[dbNum] || 0;
+        calcRow[`vendor${vIdx}Pct`] = 100;
+      }
+
+      // Also populate queryRow slots aligned to current UI vendors (for Add as New Line before re-check)
+      for (let idx = 0; idx < uiVendorsList.length; idx++) {
+        const vIdx = idx + 1;
+        const vendorObj = uiVendorsList[idx];
+        if (isVendorBanned(vendorObj)) {
+          (queryRow as any)[`vendor${vIdx}`] = 0;
+          (queryRow as any)[`vendor${vIdx}Cpi`] = 0;
+          continue;
+        }
+        const matchNum = vendorObj.name.toLowerCase().match(/\d+/);
+        const dbNum = matchNum ? parseInt(matchNum[0], 10) : vIdx;
+        (queryRow as any)[`vendor${vIdx}`] = aggregatedByDbNum[dbNum] || 0;
+        (queryRow as any)[`vendor${vIdx}Cpi`] = aggregatedCpiByDbNum[dbNum] || 0;
       }
     }
 
-    const alloc = calculateRowAllocation(queryRow, activeStrategy as StrategyType, vendors);
+    const alloc = calculateRowAllocation(calcRow, activeStrategy as StrategyType, fullVendorsList);
 
     // Build rich, clear explanations of procurement rules in English
     const loiExplanation = queryRow.hasLoiMarkup
@@ -449,117 +562,23 @@ ${matches.length === 0 ? '\n⚠️ *Notice*: No matching database record found f
     setMessages(prev => [...prev, newMsg]);
   };
 
-  // Helper to extract specs if user types in free-form natural language
-  const parseSpecsFromPrompt = (text: string) => {
-    const lower = text.toLowerCase();
-    
-    // Country detection
-    let detectedCountry = '';
-    for (const c of ALL_COUNTRIES) {
-      if (lower.includes(c.toLowerCase())) {
-        detectedCountry = c;
-        break;
-      }
-    }
-    if (!detectedCountry) {
-      if (lower.includes('germany') || lower.includes('germania') || lower.includes('de')) detectedCountry = 'Germany';
-      else if (lower.includes('france') || lower.includes('franta') || lower.includes('fr')) detectedCountry = 'France';
-      else if (lower.includes('spain') || lower.includes('spania') || lower.includes('es')) detectedCountry = 'Spain';
-      else if (lower.includes('italy') || lower.includes('italia') || lower.includes('it')) detectedCountry = 'Italy';
-      else if (lower.includes('united kingdom') || lower.includes('uk') || lower.includes('britain')) detectedCountry = 'United Kingdom';
-      else if (lower.includes('united states') || lower.includes('usa') || lower.includes('us')) detectedCountry = 'United States';
-      else if (lower.includes('netherlands') || lower.includes('holland') || lower.includes('nl')) detectedCountry = 'Netherlands';
-      else if (lower.includes('switzerland') || lower.includes('ch')) detectedCountry = 'Switzerland';
-      else if (lower.includes('romania') || lower.includes('ro')) detectedCountry = 'Romania';
-      else if (lower.includes('canada') || lower.includes('ca')) detectedCountry = 'Canada';
-      else if (lower.includes('australia') || lower.includes('au')) detectedCountry = 'Australia';
-      else if (lower.includes('japan') || lower.includes('jp')) detectedCountry = 'Japan';
-    }
-
-    // Max internal percent constraint: e.g. "max 50% internal", "max 50% internal sample"
-    let detectedMaxInternal: number | undefined = undefined;
-    const internalMatch = text.match(/(?:max(?:imum)?\s*(\d+)%\s*internal)|(?:internal\s*(?:max|capped\s*at)?\s*(\d+)%)/i);
-    if (internalMatch) {
-      detectedMaxInternal = parseInt(internalMatch[1] || internalMatch[2], 10);
-    }
-
-    // Max external CPI constraint: e.g. "max external CPI of 3 euros", "max cpi 3"
-    let detectedMaxCpi: number | undefined = undefined;
-    const cpiMatch = text.match(/(?:max(?:imum)?\s*(?:external\s*)?cpi\s*(?:of|is|:)?\s*(\d+(?:\.\d+)?))|(?:cpi\s*(?:of\s*max|max|capped\s*at|under|up\s*to)\s*(\d+(?:\.\d+)?))/i);
-    if (cpiMatch) {
-      detectedMaxCpi = parseFloat(cpiMatch[1] || cpiMatch[2]);
-    }
-
-    // Target size detection: supports "1000 completes", "1000 target", "1000 interviews", etc.
-    let detectedTarget: number = 1000;
-    const targetMatch = text.match(/(?:target\s*(?:of|is|:)?\s*(\d+))|(?:(\d+)\s*(?:n\b|target|completes|interviews|sample))/i);
-    if (targetMatch) {
-      detectedTarget = parseInt(targetMatch[1] || targetMatch[2], 10);
-    }
-
-    // LOI detection
-    let detectedLoi: number | undefined = undefined;
-    const loiMatch = text.match(/(?:loi\s*(?:of|is|:)?\s*(\d+))|(?:(\d+)\s*(?:min|minute|mins\b|m\b))/i);
-    if (loiMatch) {
-      detectedLoi = parseInt(loiMatch[1] || loiMatch[2], 10);
-    } else {
-      // Look up LOI in DB for this market
-      const dbMatch = DEFAULT_PITCHES.find(p => p.market.toLowerCase() === (detectedCountry || 'france').toLowerCase());
-      detectedLoi = dbMatch ? dbMatch.loi : 10;
-    }
-
-    // IR detection
-    let detectedIr: string | undefined = undefined;
-    const irMatch = text.match(/(?:ir\s*(?:of|is|:)?\s*(\d+)%?)|(?:(\d+)\s*%\s*(?:ir|incidence)?)/i);
-    if (irMatch) {
-      detectedIr = `${irMatch[1] || irMatch[2]}%`;
-    }
-
-    // Quotas detection
-    let detectedQuotas: string = 'No quotas';
-    if (lower.includes('no quota') || lower.includes('no quotas') || lower.includes('none') || lower.includes('without quotas')) {
-      detectedQuotas = 'No quotas';
-    } else if (lower.includes('agr')) {
-      detectedQuotas = 'AGR';
-    }
-
-    // Universe / variable detection
-    let detectedUniverse: string = 'gen pop 18-65yo';
-    if (lower.includes('gen pop 18-65') || lower.includes('gen pop') || lower.includes('general population')) {
-      detectedUniverse = 'gen pop 18-65yo';
-    } else if (lower.includes('gen pop 25-65')) {
-      detectedUniverse = 'gen pop 25-65yo';
-    } else if (lower.includes('all 19-64')) {
-      detectedUniverse = 'All 19-64yo';
-    } else if (lower.includes('18-45')) {
-      detectedUniverse = 'Gen pop 18-45yo';
-    }
-
-    const isFeasibilityQuery = Boolean(
-      detectedCountry && (
-        detectedLoi !== undefined || 
-        detectedIr !== undefined || 
-        detectedMaxInternal !== undefined ||
-        detectedMaxCpi !== undefined ||
-        lower.includes('calculate') || 
-        lower.includes('feasibility') || 
-        lower.includes('quote') ||
-        lower.includes('completes') ||
-        lower.includes('what can be done')
-      )
+  const handleCheapestOverrideChoice = (msgId: string, mode: 'reset' | 'keep') => {
+    setMessages((prev) =>
+      prev.map((m) => (m.id === msgId ? { ...m, cheapestPromptResolved: mode } : m))
     );
-
-    return {
-      isFeasibilityQuery,
-      country: detectedCountry || 'France',
-      loi: detectedLoi !== undefined ? detectedLoi : 10,
-      irRaw: detectedIr || '20%',
-      quotas: detectedQuotas,
-      universe: detectedUniverse,
-      targetSize: detectedTarget,
-      maxInternalPercent: detectedMaxInternal,
-      maxExternalCpi: detectedMaxCpi
+    if (onRunCheapestWithMode) {
+      onRunCheapestWithMode(mode);
+    }
+    const confirmMsg: ChatMessage = {
+      id: `msg-${Date.now()}-cheapest-confirm`,
+      role: 'model',
+      text:
+        mode === 'reset'
+          ? "### ✅ Cheapest Version Applied (Overrides Reset)\n\nAll manual overrides have been cleared, the strategy has been switched to **Cost-Optimized (Lowest CPI)**, and feasibility has been recalculated from the database for the lowest total cost."
+          : "### ✅ Feasibility Optimized Applied (Overrides Preserved)\n\nYour manual overrides have been preserved, the strategy has been switched to **Cost-Optimized**, and the remaining feasibility has been verified using the **Feasibility Optimized** verification rules.",
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
+    setMessages((prev) => [...prev, confirmMsg]);
   };
 
   const handleSendMessage = async (customText?: string) => {
@@ -577,18 +596,85 @@ ${matches.length === 0 ? '\n⚠️ *Notice*: No matching database record found f
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
+    // Check if user is replying via text to an unresolved cheapest-version override prompt
+    const pendingPromptMsg = [...messages].reverse().find(
+      (m) => m.role === 'model' && m.cheapestOverridePrompt && !m.cheapestPromptResolved
+    );
+    if (pendingPromptMsg) {
+      const normalizedReply = textToSend
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase();
+      const hasExplicitKeep = /\b(keep|pastreaza|pastram|pastrez|pastrati|preserve|optimized|optimizat|ramane|raman|restul)\b/.test(normalizedReply);
+      const hasExplicitReset = /\b(reset|reseteaza|resetam|clear|remove|anuleaza|anulam|anulez|anulate|sterge|stergem|sterg|elimina|eliminam)\b/.test(normalizedReply);
+      const hasNegatedKeep = /\b(nu|dont|don't|do not|fara)\s+(le\s+)?(keep|pastreaza|pastram|pastrez|pastra|preserve)\b/.test(normalizedReply);
+      const hasNegatedReset = /\b(nu|dont|don't|do not)\s+(le\s+)?(reset|reseteaza|resetam|reseta|anuleaza|anulam|anula|sterge|stergem|elimina)\b/.test(normalizedReply);
+
+      const wantsReset =
+        !hasNegatedReset &&
+        (hasExplicitReset ||
+          hasNegatedKeep ||
+          (/\b(cheapest|ieftin|ieftina|da|yes)\b/.test(normalizedReply) && !hasExplicitKeep && !/\b(nu|no)\b/.test(normalizedReply)));
+      const wantsKeep =
+        !wantsReset &&
+        (hasExplicitKeep || hasNegatedReset || /\b(nu|no)\b/.test(normalizedReply));
+
+      if (wantsReset || wantsKeep) {
+        setMessages((prev) => [...prev, userMsg]);
+        handleCheapestOverrideChoice(pendingPromptMsg.id, wantsReset ? 'reset' : 'keep');
+        return;
+      }
+    }
+
     setMessages((prev) => [...prev, userMsg]);
 
-    // Check if the prompt describes country specs to calculate directly
-    const parsed = parseSpecsFromPrompt(textToSend);
+    // Extract specs deterministically with ZERO fabricated defaults / assumptions
+    const parsed = parseNaturalLanguageSpecs(textToSend, insertedDatabase || undefined);
     if (parsed.isFeasibilityQuery) {
+      if (parsed.missingFields.length > 0) {
+        const dbCountrySpecs = parsed.country
+          ? getCountryPreExistingSpecs(parsed.country, insertedDatabase || undefined)
+          : null;
+
+        const recognizedLines = [
+          `* **Country**: ${parsed.country || '*(missing)*'}`,
+          `* **Target Size**: ${parsed.targetSize > 0 ? `**${parsed.targetSize}**` : '*(missing)*'}`,
+          `* **IR Universe**: ${parsed.universe || '*(missing)*'}`,
+          `* **IR%**: ${parsed.irRaw ? `**${parsed.irRaw}**` : '*(missing)*'}`,
+          `* **LOI**: ${parsed.loi > 0 ? `**${parsed.loi} min**` : '*(missing)*'}`,
+          `* **Quotas**: ${parsed.quotas || 'No quotas *(default when omitted)*'}`
+        ].join('\n');
+
+        const dbHintBlock = dbCountrySpecs && (
+          dbCountrySpecs.universes.length > 0 ||
+          dbCountrySpecs.irs.length > 0 ||
+          dbCountrySpecs.lois.length > 0
+        )
+          ? `\n\n### 🗄️ Available Database Variables for ${parsed.country}\n` +
+            `* **IR Universes**: ${dbCountrySpecs.universes.length > 0 ? dbCountrySpecs.universes.join(', ') : 'None in active DB'}\n` +
+            `* **IR%**: ${dbCountrySpecs.irs.length > 0 ? dbCountrySpecs.irs.join(', ') : 'None in active DB'}\n` +
+            `* **LOI (min)**: ${dbCountrySpecs.lois.length > 0 ? dbCountrySpecs.lois.map(l => `${l}m`).join(', ') : 'None in active DB'}\n` +
+            `* **Quotas**: ${dbCountrySpecs.quotas.length > 0 ? dbCountrySpecs.quotas.join(', ') : 'No quotas'}`
+          : (parsed.country ? `\n\n⚠️ *Notice*: **${parsed.country}** has no pre-existing records in the active database.` : '');
+
+        const missingMsg: ChatMessage = {
+          id: `msg-${Date.now()}-missing`,
+          role: 'model',
+          text: `### ⚠️ Incomplete Specifications — No Assumptions Applied\n\nTo avoid guessing capabilities, please provide all required parameters:\n* **Missing Fields**: **${parsed.missingFields.join(', ')}**\n\n### 📋 Recognized Input\n${recognizedLines}${dbHintBlock}\n\n💡 You can include the missing parameters in your message or select them directly from the **Predefined Specifications Generator** dropdowns above.`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        };
+        setMessages(prev => [...prev, missingMsg]);
+        return;
+      }
+
       executeQueryCalculation({
         country: parsed.country,
         universe: parsed.universe,
         loi: parsed.loi,
         irRaw: parsed.irRaw,
-        quotas: parsed.quotas,
+        quotas: parsed.quotas || 'No quotas',
         targetSize: parsed.targetSize,
+        targetedCpi: parsed.targetedCpi,
         maxInternalPercent: parsed.maxInternalPercent,
         maxExternalCpi: parsed.maxExternalCpi
       });
@@ -598,18 +684,18 @@ ${matches.length === 0 ? '\n⚠️ *Notice*: No matching database record found f
     setLoading(true);
 
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          messages: [...messages, userMsg].map(m => ({ role: m.role, text: m.text })),
-          dataState: {
-            pitches,
-            allocations,
+      // The rule engine of the original /api/chat route runs in the browser (see lib/ruleEngine.ts).
+      // Pitches and allocations go through JSON like the old request did, so the engine works on
+      // copies; the (large, read-only) database is passed by reference instead of being uploaded.
+      let responseData: any;
+      try {
+        responseData = JSON.parse(JSON.stringify(processRuleBasedQuery(
+          JSON.parse(JSON.stringify([...messages, userMsg].map(m => ({ role: m.role, text: m.text })))),
+          {
+            pitches: JSON.parse(JSON.stringify(pitches)),
+            allocations: JSON.parse(JSON.stringify(allocations)),
             insertedDatabase: insertedDatabase || [],
-            vendors: vendors && vendors.length > 0 ? vendors : [
+            vendors: vendors && vendors.length > 0 ? JSON.parse(JSON.stringify(vendors)) : [
               { name: 'Vendor 1', tier: 'tier 0' },
               { name: 'Vendor 2', tier: 'tier 1' },
               { name: 'Vendor 3', tier: 'tier 2' },
@@ -617,14 +703,14 @@ ${matches.length === 0 ? '\n⚠️ *Notice*: No matching database record found f
             ]
           },
           activeStrategy
-        })
-      });
-
-      if (!res.ok) {
-        throw new Error('Failed to get response from the feasibility chat route.');
+        )));
+      } catch (engineErr) {
+        console.error("Local rule-based engine error:", engineErr);
+        responseData = {
+          text: "### ⚠️ System Notice\n\nAn unexpected error occurred while processing your request locally.",
+          updatedPitches: null
+        };
       }
-
-      const responseData = await res.json();
       
       // If server modified the data state, trigger parent update!
       if (responseData.updatedPitches && Array.isArray(responseData.updatedPitches)) {
@@ -642,7 +728,8 @@ ${matches.length === 0 ? '\n⚠️ *Notice*: No matching database record found f
         id: `msg-${Date.now()}-model`,
         role: 'model',
         text: responseData.text || "I was unable to draft an answer. Please try again.",
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        cheapestOverridePrompt: Boolean(responseData.requiresOverrideChoice)
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
@@ -714,7 +801,7 @@ ${matches.length === 0 ? '\n⚠️ *Notice*: No matching database record found f
             onClick={() => {
               setMessages([]);
             }}
-            className="p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-150 rounded transition cursor-pointer"
+            className="p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded transition cursor-pointer"
             title="Clear conversation history"
           >
             <RefreshCw className="h-3.5 w-3.5" />
@@ -725,7 +812,7 @@ ${matches.length === 0 ? '\n⚠️ *Notice*: No matching database record found f
             <button
               type="button"
               onClick={onClose}
-              className="p-1 text-slate-400 hover:text-red-500 hover:bg-slate-150 rounded transition cursor-pointer"
+              className="p-1 text-slate-400 hover:text-red-500 hover:bg-slate-100 rounded transition cursor-pointer"
               title="Close Assistant"
             >
               <X className="h-4 w-4" />
@@ -754,7 +841,7 @@ ${matches.length === 0 ? '\n⚠️ *Notice*: No matching database record found f
           </span>
         </div>
 
-        {/* Form controls in strict requested order: Country -> Target Size -> LOI -> IR% -> IR Universe -> Quotas -> Targeted CPI */}
+        {/* Form controls in strict requested order: Country -> Target Size -> IR Universe -> IR% -> LOI -> Quotas -> Targeted CPI */}
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-1.5 text-xs">
           {/* 1. Country */}
           <div className="flex flex-col">
@@ -798,58 +885,13 @@ ${matches.length === 0 ? '\n⚠️ *Notice*: No matching database record found f
               step="50"
               value={targetSize}
               onChange={(e) => setTargetSize(Math.max(1, parseInt(e.target.value, 10) || 1))}
-              className="w-full px-2 py-1 text-[11px] bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-[#2b6cb0] font-mono font-bold text-slate-850 shadow-xs min-h-[30px]"
+              className="w-full px-2 py-1 text-[11px] bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-[#2b6cb0] font-mono font-bold text-slate-800 shadow-xs min-h-[30px]"
             />
           </div>
 
-          {/* 3. LOI */}
+          {/* 3. IR Universe */}
           <div className="flex flex-col">
-            <label className="text-[9px] font-bold uppercase text-slate-500 mb-0.5 tracking-tight truncate">3. LOI</label>
-            <div className="bg-white border border-slate-200 rounded-md p-1 min-h-[30px] flex items-center shadow-xs hover:border-[#2b6cb0] transition-colors">
-              <ComboboxCell
-                value={selectedLoi && selectedLoi > 0 ? selectedLoi : ''}
-                onSave={(val) => {
-                  const num = parseInt(val, 10) || 15;
-                  setSelectedLoi(num);
-                }}
-                options={pitchSpecs.loiDropdownOptions}
-                preExistingOptions={pitchSpecs.preExistingLois}
-                specType="loi"
-                placeholder="Insert LOI"
-                dropdownDirection="down"
-                dropdownAlign="left"
-                displayValue={selectedLoi && selectedLoi > 0 ? `${selectedLoi} min` : undefined}
-                align="center"
-                widthClass="w-full"
-                className="w-full justify-between font-mono text-[11px]"
-              />
-            </div>
-          </div>
-
-          {/* 4. IR% */}
-          <div className="flex flex-col">
-            <label className="text-[9px] font-bold uppercase text-slate-500 mb-0.5 tracking-tight truncate">4. IR%</label>
-            <div className="bg-white border border-slate-200 rounded-md p-1 min-h-[30px] flex items-center shadow-xs hover:border-[#2b6cb0] transition-colors">
-              <ComboboxCell
-                value={selectedIr}
-                onSave={(val) => setSelectedIr(val)}
-                options={pitchSpecs.irDropdownOptions}
-                preExistingOptions={pitchSpecs.preExistingIrs}
-                specType="ir"
-                placeholder="Insert incidence"
-                dropdownDirection="down"
-                dropdownAlign="left"
-                displayValue={selectedIr}
-                align="center"
-                widthClass="w-full"
-                className="w-full justify-between font-mono font-bold text-emerald-950 text-[11px]"
-              />
-            </div>
-          </div>
-
-          {/* 5. IR Universe */}
-          <div className="flex flex-col">
-            <label className="text-[9px] font-bold uppercase text-slate-500 mb-0.5 tracking-tight truncate">5. IR Universe</label>
+            <label className="text-[9px] font-bold uppercase text-slate-500 mb-0.5 tracking-tight truncate">3. IR Universe</label>
             <div className="bg-white border border-slate-200 rounded-md p-1 min-h-[30px] flex items-center shadow-xs hover:border-[#2b6cb0] transition-colors" title={selectedUniverse}>
               <ComboboxCell
                 value={selectedUniverse}
@@ -864,6 +906,62 @@ ${matches.length === 0 ? '\n⚠️ *Notice*: No matching database record found f
                 align="left"
                 widthClass="w-full"
                 className="w-full justify-between"
+              />
+            </div>
+          </div>
+
+          {/* 4. IR% */}
+          <div className="flex flex-col">
+            <label className="text-[9px] font-bold uppercase text-slate-500 mb-0.5 tracking-tight truncate">4. IR%</label>
+            <div className="bg-white border border-slate-200 rounded-md p-1 min-h-[30px] flex items-center shadow-xs hover:border-[#2b6cb0] transition-colors">
+              <ComboboxCell
+                value={selectedIr}
+                onSave={(val) => {
+                  const lower = String(val || '').trim().toLowerCase();
+                  if (lower.startsWith('insert') || lower === '' || lower === 'none' || lower === '0' || lower === '0%') {
+                    setSelectedIr('');
+                  } else {
+                    setSelectedIr(val);
+                  }
+                }}
+                options={pitchSpecs.irDropdownOptions}
+                preExistingOptions={pitchSpecs.preExistingIrs}
+                specType="ir"
+                placeholder="Insert incidence"
+                dropdownDirection="down"
+                dropdownAlign="left"
+                displayValue={selectedIr || undefined}
+                align="center"
+                widthClass="w-full"
+                className="w-full justify-between font-mono font-bold text-emerald-950 text-[11px]"
+              />
+            </div>
+          </div>
+
+          {/* 5. LOI */}
+          <div className="flex flex-col">
+            <label className="text-[9px] font-bold uppercase text-slate-500 mb-0.5 tracking-tight truncate">5. LOI</label>
+            <div className="bg-white border border-slate-200 rounded-md p-1 min-h-[30px] flex items-center shadow-xs hover:border-[#2b6cb0] transition-colors">
+              <ComboboxCell
+                value={selectedLoi && selectedLoi > 0 ? selectedLoi : ''}
+                onSave={(val) => {
+                  const lower = String(val || '').trim().toLowerCase();
+                  if (lower.startsWith('insert') || lower === '' || lower === 'none' || lower === '0') {
+                    setSelectedLoi(0);
+                  } else {
+                    setSelectedLoi(parseInt(val.replace(/[^0-9]/g, ''), 10) || 0);
+                  }
+                }}
+                options={pitchSpecs.loiDropdownOptions}
+                preExistingOptions={pitchSpecs.preExistingLois}
+                specType="loi"
+                placeholder="Insert LOI"
+                dropdownDirection="down"
+                dropdownAlign="left"
+                displayValue={selectedLoi && selectedLoi > 0 ? `${selectedLoi} min` : undefined}
+                align="center"
+                widthClass="w-full"
+                className="w-full justify-between font-mono text-[11px]"
               />
             </div>
           </div>
@@ -902,7 +1000,7 @@ ${matches.length === 0 ? '\n⚠️ *Notice*: No matching database record found f
                 placeholder="Target CPI"
                 value={targetedCpi}
                 onChange={(e) => setTargetedCpi(e.target.value)}
-                className="w-full pl-5 pr-1.5 py-1 text-[11px] bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-[#2b6cb0] font-mono font-medium text-slate-850 shadow-xs min-h-[30px]"
+                className="w-full pl-5 pr-1.5 py-1 text-[11px] bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-[#2b6cb0] font-mono font-medium text-slate-800 shadow-xs min-h-[30px]"
               />
             </div>
           </div>
@@ -964,7 +1062,7 @@ ${matches.length === 0 ? '\n⚠️ *Notice*: No matching database record found f
                 className={`p-3 rounded-xl text-[11px] font-normal leading-relaxed overflow-x-auto shadow-sm whitespace-pre-line ${
                   msg.role === 'user' 
                     ? 'bg-[#2b6cb0] text-white rounded-tr-none' 
-                    : 'bg-white border border-slate-150 text-slate-800 rounded-tl-none'
+                    : 'bg-white border border-slate-200 text-slate-800 rounded-tl-none'
                 }`}
               >
                 {msg.role === 'user' ? (
@@ -972,6 +1070,39 @@ ${matches.length === 0 ? '\n⚠️ *Notice*: No matching database record found f
                 ) : (
                   <div className="space-y-1">
                     {renderMessageText(msg.text)}
+
+                    {/* Cheapest version manual overrides decision buttons */}
+                    {msg.cheapestOverridePrompt && (
+                      <div className="mt-2.5 pt-2 border-t border-slate-100 space-y-1.5">
+                        {!msg.cheapestPromptResolved ? (
+                          <div className="flex flex-wrap gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleCheapestOverrideChoice(msg.id, 'reset')}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs cursor-pointer transition active:scale-95"
+                            >
+                              <RotateCcw className="h-3 w-3" />
+                              Reset Overrides &amp; Check Cheapest
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleCheapestOverrideChoice(msg.id, 'keep')}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-xs cursor-pointer transition active:scale-95"
+                            >
+                              <Target className="h-3 w-3" />
+                              Keep Overrides &amp; Check Remaining (Optimized)
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-1 inline-flex items-center gap-1">
+                            <Check className="h-3 w-3" />
+                            {msg.cheapestPromptResolved === 'reset'
+                              ? 'Applied: Reset overrides & checked cheapest'
+                              : 'Applied: Kept overrides & ran Feasibility Optimized'}
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* Direct action button */}
                     {msg.queryPitch && onUpdatePitches && (

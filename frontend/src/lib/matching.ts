@@ -52,9 +52,19 @@ export function matchUniverse(pitch: FeasibilityRow, dbRow: any): boolean {
   const uDb = cleanSpecString(dbRow.irUniverse);
   const tDb = cleanSpecString(dbRow.target);
 
-  const pitchDescriptors = [uPitch, tPitch].filter(Boolean);
   const dbDescriptors = [uDb, tDb].filter(Boolean);
 
+  // If irUniverse is explicitly present on pitch (even empty string if user cleared it),
+  // match strictly on irUniverse so stale pitch.target never leaks into matching.
+  if (pitch.irUniverse !== undefined) {
+    if (!uPitch) {
+      return false;
+    }
+    if (dbDescriptors.length === 0) return false;
+    return dbDescriptors.includes(uPitch);
+  }
+
+  const pitchDescriptors = [uPitch, tPitch].filter(Boolean);
   if (pitchDescriptors.length === 0 && dbDescriptors.length === 0) return true;
   if (pitchDescriptors.length === 0 || dbDescriptors.length === 0) return false;
 
@@ -161,70 +171,72 @@ export function evaluateDbMatch(pitch: FeasibilityRow, dbRow: any): DbMatchResul
     return { isMatch: false, score: -1 };
   }
 
-  // 4. LOI Check
+  // 4. LOI Check (must be > 0; clearing LOI to 0 yields 0 output / no match)
   const loiPitch = normalizeLoi(pitch.loi);
   const loiDb = normalizeLoi(dbRow.loi !== undefined ? dbRow.loi : dbRow.LOI);
+  if (loiPitch <= 0 || loiDb <= 0) {
+    return { isMatch: false, score: -1 };
+  }
 
   let hasLoiMarkup = false;
   let loiMarkupPct = 0;
   let loiDiff = 0;
 
-  if (loiPitch > 0 && loiDb > 0) {
-    if (Math.abs(loiPitch - loiDb) < 0.001) {
-      // Exact match
-      hasLoiMarkup = false;
-    } else if (loiPitch < loiDb) {
-      // Lower LOI by up to 10 min vs database
-      const diff = loiDb - loiPitch;
-      if (diff > 10.0001) {
-        return { isMatch: false, score: -1 };
-      }
-      loiDiff = diff;
-      hasLoiMarkup = false;
-    } else {
-      // Higher LOI by up to 5 min vs database
-      const diff = loiPitch - loiDb;
-      if (diff > 5.0001) {
-        return { isMatch: false, score: -1 };
-      }
-      loiDiff = diff;
-      hasLoiMarkup = true;
-      loiMarkupPct = 10;
+  if (Math.abs(loiPitch - loiDb) < 0.001) {
+    // Exact match
+    hasLoiMarkup = false;
+  } else if (loiPitch < loiDb) {
+    // Lower LOI by up to 10 min vs database
+    const diff = loiDb - loiPitch;
+    if (diff > 10.0001) {
+      return { isMatch: false, score: -1 };
     }
+    loiDiff = diff;
+    hasLoiMarkup = false;
+  } else {
+    // Higher LOI by up to 5 min vs database
+    const diff = loiPitch - loiDb;
+    if (diff > 5.0001) {
+      return { isMatch: false, score: -1 };
+    }
+    loiDiff = diff;
+    hasLoiMarkup = true;
+    loiMarkupPct = 10;
   }
 
-  // 5. IR% Check
+  // 5. IR% Check (must be > 0; clearing IR% to 0 yields 0 output / no match)
   const irPitch = normalizeIr(pitch.irPercent);
   const irDb = normalizeIr(
     dbRow.irPercent !== undefined 
       ? dbRow.irPercent 
       : (dbRow['ir%'] !== undefined ? dbRow['ir%'] : dbRow.irPercentDecimal)
   );
+  if (irPitch <= 0 || irDb <= 0) {
+    return { isMatch: false, score: -1 };
+  }
 
   let irReductionFactor = 1.0;
   let irReductionPct = 0;
   let irDiff = 0;
 
-  if (irPitch > 0 && irDb > 0) {
-    if (irPitch < irDb - 0.0001) {
-      irDiff = irDb - irPitch;
-      // Max difference 10% (0.10)
-      if (irDiff > 0.10001) {
-        return { isMatch: false, score: -1 };
-      }
-      // Feasibility is scaled down by the ratio between actual requested incidence and database incidence:
-      // e.g., if incidence drops from 20% in DB to 13% requested (7% difference, within 10% threshold):
-      // irPitch / irDb = 13% / 20% = 0.65 (65%).
-      // The reduction is 100% - 65% = 35%.
-      // Feasibility capacity is multiplied by 0.65 (65%) to reflect reality.
-      irReductionFactor = Math.max(0.01, irPitch / irDb);
-      irReductionPct = Math.round((1 - irReductionFactor) * 100);
-    } else {
-      // Higher or equal incidence: closest feasibility without applying reduction factors
-      irDiff = irPitch - irDb;
-      irReductionFactor = 1.0;
-      irReductionPct = 0;
+  if (irPitch < irDb - 0.0001) {
+    irDiff = irDb - irPitch;
+    // Max difference 10% (0.10)
+    if (irDiff > 0.10001) {
+      return { isMatch: false, score: -1 };
     }
+    // Feasibility is scaled down by the ratio between actual requested incidence and database incidence:
+    // e.g., if incidence drops from 20% in DB to 13% requested (7% difference, within 10% threshold):
+    // irPitch / irDb = 13% / 20% = 0.65 (65%).
+    // The reduction is 100% - 65% = 35%.
+    // Feasibility capacity is multiplied by 0.65 (65%) to reflect reality.
+    irReductionFactor = Math.max(0.01, irPitch / irDb);
+    irReductionPct = Math.round((1 - irReductionFactor) * 100);
+  } else {
+    // Higher or equal incidence: closest feasibility without applying reduction factors
+    irDiff = irPitch - irDb;
+    irReductionFactor = 1.0;
+    irReductionPct = 0;
   }
 
   // Calculate score: higher score for exact matches

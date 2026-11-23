@@ -17,6 +17,7 @@ import {
   ATTACHED_REFERENCE_SPECS
 } from '../data/attachedSpecsData';
 import { VENDOR_DATABASE_POOL } from '../data/defaultData';
+import { getAuthoritativeVendorConfig } from '../data/vendorTiersData';
 import { 
   FileSpreadsheet, 
   Search, 
@@ -76,6 +77,10 @@ interface DatabaseGridProps {
   insertedDatabase?: any;
   targetedBudget?: number;
   feasibilityFontSizeDelta?: number;
+  liveFeasibility?: boolean;
+  vendorOverrides?: Record<string, VendorTier>;
+  onAddManualVendor?: (newVendors: VendorTier[], newPitches: FeasibilityRow[]) => void;
+  onNotify?: (toast: { message: string; type: 'success' | 'error' | 'info' }) => void;
 }
 
 function InstantTooltip({
@@ -145,7 +150,11 @@ export default function DatabaseGrid({
   onNewSpecsFileAttached,
   insertedDatabase,
   targetedBudget,
-  feasibilityFontSizeDelta = 0
+  feasibilityFontSizeDelta = 0,
+  liveFeasibility = false,
+  vendorOverrides = {},
+  onAddManualVendor,
+  onNotify
 }: DatabaseGridProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedMarket, setSelectedMarket] = useState('All');
@@ -155,8 +164,11 @@ export default function DatabaseGrid({
   // High fidelity editing cells
   const [editingCell, setEditingCell] = useState<{ rowId: string; field: keyof FeasibilityRow } | null>(null);
   const [tempEditValue, setTempEditValue] = useState('');
+  const [initialEditValue, setInitialEditValue] = useState('');
   const [helpOpen, setHelpOpen] = useState(false);
-  const setToastNotification = (_val: any) => {};
+  const setToastNotification = (val: { message: string; type: 'success' | 'error' | 'info' }) => {
+    if (onNotify) onNotify(val);
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const activeDbCountries = useMemo(() => getDbCountries(insertedDatabase), [insertedDatabase]);
@@ -181,7 +193,7 @@ export default function DatabaseGrid({
 
   const updatePitchesAndDecheck = (newPitches: FeasibilityRow[]) => {
     onUpdatePitches(newPitches);
-    if (setHasChecked) {
+    if (setHasChecked && !liveFeasibility) {
       setHasChecked(false);
     }
   };
@@ -237,28 +249,27 @@ export default function DatabaseGrid({
     e.target.value = '';
   };
 
-  // Add blank option row
+  // Add Audience row (aligned with SpecsCalculator Add Audience, 0 fabricated capacities)
   const handleAddRow = () => {
     const newRow: FeasibilityRow = {
-      id: `row-new-${Date.now()}`,
-      pitchName: 'Pitch ' + (Math.floor(Math.random() * 10) + 4),
+      id: `row-new-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      pitchName: pitches.length > 0 ? pitches[0].pitchName : 'Pitch 1',
       source: 'User Creation',
-      option: String(pitches.filter(p => p.pitchName === 'Pitch 1').length + 1),
+      option: String(pitches.length + 1),
       market: 'Germany',
       target: 'gen pop 18-65yo',
       loi: 10,
-      irPercent: 0.2,
+      irPercent: 0.20,
       irUniverse: 'gen pop 18-65yo',
-      quotas: 'AGR',
+      quotas: 'No quotas',
       waves: 1,
       totalFreshSample: 1000,
       totalSampleSize: 1000,
-      internal: 3000,
-      maxInternalPercent: 100,
-      vendor1: 1500,
-      vendor1Cpi: 4,
-      vendor2: 500,
-      vendor2Cpi: 6,
+      internal: 0,
+      vendor1: 0,
+      vendor1Cpi: 0,
+      vendor2: 0,
+      vendor2Cpi: 0,
       vendor3: 0,
       vendor3Cpi: 0,
       vendor4: 0,
@@ -271,10 +282,10 @@ export default function DatabaseGrid({
       salesCpi: 7.50,
       comparability: 'High'
     };
-    updatePitchesAndDecheck([...pitches, newRow]);
+    onUpdatePitches([...pitches, newRow], true);
     setToastNotification({
-      message: `Added new blank scenario.`,
-      type: "success"
+      message: `Added new audience line #${pitches.length + 1} to bottom.`,
+      type: 'success'
     });
   };
 
@@ -283,13 +294,26 @@ export default function DatabaseGrid({
     const origin = pitches.find(p => p.id === rowId);
     if (!origin) return;
 
+    const newId = `row-copied-grid-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const existingAlloc = origin.lockedAllocation || allocations.find((a: any) => a.rowId === rowId);
     const duplicatedCell: FeasibilityRow = {
       ...origin,
-      id: `row-copied-grid-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: newId,
       option: `${origin.option} (Copy)`,
+      ...(origin.isLocked && existingAlloc
+        ? {
+            lockedAllocation: {
+              ...existingAlloc,
+              rowId: newId,
+              vendorAllocations: existingAlloc.vendorAllocations
+                ? { ...existingAlloc.vendorAllocations }
+                : undefined,
+            },
+          }
+        : {}),
     };
 
-    updatePitchesAndDecheck([...pitches, duplicatedCell]);
+    onUpdatePitches([...pitches, duplicatedCell], true);
     setToastNotification({
       message: `Duplicated scenario "${origin.option}" to bottom.`,
       type: "success"
@@ -297,7 +321,7 @@ export default function DatabaseGrid({
   };
 
   const handleToggleLockRow = (rowId: string) => {
-    updatePitchesAndDecheck(pitches.map(p => {
+    onUpdatePitches(pitches.map(p => {
       if (p.id === rowId) {
         const nextLocked = !p.isLocked;
         let lockedAlloc = undefined;
@@ -311,7 +335,7 @@ export default function DatabaseGrid({
         };
       }
       return p;
-    }));
+    }), true);
   };
 
   const handleDeleteRow = (id: string) => {
@@ -338,12 +362,23 @@ export default function DatabaseGrid({
       return; // Disable editing on locked rows
     }
     setEditingCell({ rowId, field });
-    setTempEditValue(String(currentVal));
+    const strVal = String(currentVal);
+    setTempEditValue(strVal);
+    setInitialEditValue(strVal);
   };
 
   const saveInlineEdit = () => {
     if (!editingCell) return;
     const { rowId, field } = editingCell;
+
+    // Do not lock an override if the user clicked and blurred without changing the value
+    if (
+      (String(field).endsWith('PctOverride') || field === 'maxInternalPercent') &&
+      tempEditValue.trim() === initialEditValue.trim()
+    ) {
+      setEditingCell(null);
+      return;
+    }
 
     const updated = pitches.map((pitch) => {
       if (pitch.id === rowId) {
@@ -352,10 +387,10 @@ export default function DatabaseGrid({
         // Number parsing or validations
         if (field === 'irPercent') {
           let num = parseFloat(tempEditValue.replace('%', ''));
-          if (isNaN(num)) num = 20;
+          if (isNaN(num)) num = 0;
           value = num > 1 ? num / 100 : num;
         } else if (
-          String(field).endsWith('PctOverride')
+          String(field).endsWith('PctOverride') || field === 'maxInternalPercent'
         ) {
           const rawStr = tempEditValue.trim().toLowerCase();
           if (rawStr === '' || rawStr === 'auto' || rawStr === 'reset') {
@@ -368,6 +403,10 @@ export default function DatabaseGrid({
               const nextPitch = { ...pitch };
               delete (nextPitch as any)[field];
               return nextPitch;
+            } else if (field === 'maxInternalPercent' && num >= 100) {
+              const nextPitch = { ...pitch };
+              delete nextPitch.maxInternalPercent;
+              return nextPitch;
             } else {
               value = Math.max(0, Math.min(100, num));
             }
@@ -375,13 +414,13 @@ export default function DatabaseGrid({
         } else if (
           [
             'loi', 'waves', 'totalFreshSample', 'totalSampleSize', 
-            'internal', 'maxInternalPercent', 
+            'internal', 
             'pmFee', 'salesCpi', 'targetedCpi'
           ].includes(String(field)) ||
           String(field).startsWith('vendor')
         ) {
           value = parseFloat(tempEditValue.replace(/[^0-9.-]/g, '')) || 0;
-          if (String(field).endsWith('Pct') || field === 'maxInternalPercent') {
+          if (String(field).endsWith('Pct')) {
             value = Math.max(0, Math.min(100, value));
           }
         }
@@ -398,6 +437,7 @@ export default function DatabaseGrid({
   const handleCellSave = (rowId: string, field: keyof FeasibilityRow, rawVal: string) => {
     const updated = pitches.map((pitch) => {
       if (pitch.id === rowId) {
+        if (pitch.isLocked) return pitch;
         let value: any = rawVal;
         const lower = String(rawVal || '').trim().toLowerCase();
 
@@ -434,7 +474,20 @@ export default function DatabaseGrid({
             value = rawVal.trim();
           }
         }
-        return { ...pitch, [field]: value };
+        const nextPitch: any = { ...pitch, [field]: value };
+        if (field === 'irUniverse') {
+          nextPitch.target = value;
+        }
+        // Clear stale manual share/cap overrides when core specs change so calculation stays database-accurate
+        delete nextPitch.maxInternalPercent;
+        delete nextPitch.internalPctOverride;
+        delete nextPitch.overlapVariable;
+        for (const key of Object.keys(nextPitch)) {
+          if (/^vendor\d+PctOverride$/i.test(key)) {
+            delete nextPitch[key];
+          }
+        }
+        return nextPitch as FeasibilityRow;
       }
       return pitch;
     });
@@ -442,17 +495,76 @@ export default function DatabaseGrid({
   };
 
   const handleAddNewVendor = () => {
-    if (!vendors || !onUpdateVendors) {
+    if (!vendors || (!onUpdateVendors && !onAddManualVendor)) {
       setToastNotification({ message: "Vendor updating is unavailable in this view.", type: "error" });
       return;
     }
 
-    const activeNames = vendors.map(v => v.name.toLowerCase().trim());
-    const candidates = VENDOR_DATABASE_POOL.filter(candidate => {
-      const isDoNotUse = String(candidate.tier || '').toLowerCase().includes('do not use');
-      const isRed = String(candidate.color || '').toLowerCase() === 'red';
-      if (isDoNotUse || isRed) return false;
-      return !activeNames.includes(candidate.name.toLowerCase().trim());
+    const activeNames = new Set(vendors.map(v => v.name.toLowerCase().trim()));
+    const dbSource: any[] =
+      Array.isArray(insertedDatabase) && insertedDatabase.length > 0
+        ? insertedDatabase
+        : ATTACHED_REFERENCE_SPECS.map((spec, idx) => ({
+            id: `ref-db-${idx}`,
+            pitchName: `Ref Spec ${idx + 1}`,
+            source: 'System DB',
+            option: String(idx + 1),
+            market: spec.market,
+            target: spec.universe,
+            loi: spec.loi,
+            irPercent: parseFloat(String(spec.irRaw || '0').replace('%', '')) / 100 || 0,
+            irUniverse: spec.universe,
+            quotas: spec.quotas || 'No quotas',
+            waves: 1,
+            totalFreshSample: 1000,
+            totalSampleSize: 1000,
+            internal: 3000,
+            vendor1: 2000,
+            vendor1Cpi: 4.5,
+            vendor2: 1200,
+            vendor2Cpi: 6.0,
+            vendor3: 800,
+            vendor3Cpi: 7.5,
+            vendor4: 500,
+            vendor4Cpi: 9.0,
+            vendor1Pct: 100,
+            vendor2Pct: 100,
+            vendor3Pct: 100,
+            vendor4Pct: 100,
+            pmFee: 150,
+            salesCpi: 7.5,
+            comparability: 'High',
+          }));
+
+    // Discover ALL vendor numbers across the authoritative pool (1..166+), uploaded database columns (scalable 1..1000+), and current pitches
+    const allVendorNums = new Set<number>();
+    VENDOR_DATABASE_POOL.forEach(v => {
+      const m = v.name.toLowerCase().match(/\d+/);
+      if (m) allVendorNums.add(parseInt(m[0], 10));
+    });
+    dbSource.forEach((dbRow: any) => {
+      Object.keys(dbRow).forEach(k => {
+        const m = k.match(/^vendor(\d+)$/i);
+        if (m) allVendorNums.add(parseInt(m[1], 10));
+      });
+    });
+    pitches.forEach((p: any) => {
+      Object.keys(p).forEach(k => {
+        const m = k.match(/^vendor(\d+)$/i);
+        if (m) allVendorNums.add(parseInt(m[1], 10));
+      });
+    });
+
+    const candidates: VendorTier[] = [];
+    Array.from(allVendorNums).sort((a, b) => a - b).forEach(num => {
+      const nameKey = `vendor ${num}`;
+      const persistedOverride = vendorOverrides?.[nameKey];
+      const auth = persistedOverride || getAuthoritativeVendorConfig(num);
+      const isDoNotUse = String(auth.tier || '').toLowerCase().includes('do not use');
+      const isRed = String(auth.color || '').toLowerCase() === 'red';
+      if (isDoNotUse || isRed) return;
+      if (activeNames.has(auth.name.toLowerCase().trim())) return;
+      candidates.push(auth);
     });
 
     if (candidates.length === 0) {
@@ -481,9 +593,18 @@ export default function DatabaseGrid({
       return 4;
     };
 
+    // Precompute deduplicated matches once per pitch across the entire active database (zero fabricated capabilities)
+    const pitchMatchCache = new Map<string, any[]>();
+    if (dbSource.length > 0) {
+      pitches.forEach(pitch => {
+        if (pitch.isLocked) return;
+        const matches = dbSource.filter((dbRow: any) => evaluateDbMatch(pitch, dbRow).isMatch);
+        pitchMatchCache.set(pitch.id, deduplicateDbRows(matches));
+      });
+    }
+
     const matchedCandidates = candidates.map(candidate => {
-      const nameLower = candidate.name.toLowerCase();
-      const matchNum = nameLower.match(/\d+/);
+      const matchNum = candidate.name.toLowerCase().match(/\d+/);
       const vendorNum = matchNum ? parseInt(matchNum[0], 10) : 0;
       const dbCapKey = `vendor${vendorNum}`;
 
@@ -491,36 +612,15 @@ export default function DatabaseGrid({
       let totalCapacity = 0;
 
       pitches.forEach(pitch => {
+        if (pitch.isLocked) return;
         let lineCap = 0;
 
-        // 1. Check inserted database if loaded
-        if (insertedDatabase && insertedDatabase.length > 0 && vendorNum > 0) {
-          const matches = insertedDatabase.filter((dbRow: any) => evaluateDbMatch(pitch, dbRow).isMatch);
-
-          const deduplicatedMatches = deduplicateDbRows(matches);
+        // Check active database strictly by true database vendor column (real DB match + deduplication, never positional pitch slots)
+        if (dbSource.length > 0 && vendorNum > 0) {
+          const deduplicatedMatches = pitchMatchCache.get(pitch.id) || [];
           const maxCap = deduplicatedMatches.reduce((max: number, r: any) => Math.max(max, parseInt(r[dbCapKey], 10) || 0), 0);
           if (maxCap > 0) {
             lineCap = maxCap;
-          }
-        }
-
-        // 2. Check directly on pitch object
-        if (lineCap === 0 && vendorNum > 0 && (pitch as any)[dbCapKey] !== undefined) {
-          const directCap = Number((pitch as any)[dbCapKey]) || 0;
-          if (directCap > 0) {
-            lineCap = directCap;
-          }
-        }
-
-        // 3. Check VENDOR_DATABASE_POOL country coverage
-        if (lineCap === 0 && candidate.countries && candidate.countries.length > 0) {
-          const pitchMarket = String(pitch.market || '').toLowerCase().trim();
-          const matchesCountry = candidate.countries.some(c => {
-            const cLower = c.toLowerCase().trim();
-            return cLower === pitchMarket || pitchMarket.includes(cLower) || cLower.includes(pitchMarket);
-          });
-          if (matchesCountry) {
-            lineCap = Math.max(1000, pitch.totalSampleSize || 1000);
           }
         }
 
@@ -539,7 +639,7 @@ export default function DatabaseGrid({
       };
     });
 
-    // Only candidates with matchesCount > 0 and totalCapacity > 0 are eligible
+    // Only candidates with real database capacity > 0 are eligible
     const eligibleCandidates = matchedCandidates.filter(c => c.matchesCount > 0 && c.totalCapacity > 0);
 
     if (eligibleCandidates.length === 0) {
@@ -563,8 +663,10 @@ export default function DatabaseGrid({
     const best = eligibleCandidates[0].candidate;
     const nextIdx = vendors.length + 1;
 
-    const updatedVendors = [...vendors, { name: best.name, tier: best.tier, color: best.color, isAddedManually: true } as VendorTier];
-    onUpdateVendors(updatedVendors);
+    const updatedVendors: VendorTier[] = [
+      ...vendors,
+      { name: best.name, tier: best.tier, color: best.color, isAddedManually: true }
+    ];
 
     const capKey = `vendor${nextIdx}`;
     const cpiKey = `vendor${nextIdx}Cpi`;
@@ -572,8 +674,9 @@ export default function DatabaseGrid({
     const overrideKey = `vendor${nextIdx}PctOverride`;
 
     const nextPitches = pitches.map(pitch => {
-      const nameLower = best.name.toLowerCase();
-      const matchNum = nameLower.match(/\d+/);
+      if (pitch.isLocked) return pitch;
+
+      const matchNum = best.name.toLowerCase().match(/\d+/);
       const vendorNumInDb = matchNum ? parseInt(matchNum[0], 10) : 0;
       const dbCapKey = `vendor${vendorNumInDb}`;
       const dbCpiKey = `vendor${vendorNumInDb}Cpi`;
@@ -581,40 +684,27 @@ export default function DatabaseGrid({
       let realCapacity = 0;
       let realCpi = 0;
 
-      const dbSearchSource = insertedDatabase || [];
-      const matches = dbSearchSource.filter((dbRow: any) => evaluateDbMatch(pitch, dbRow).isMatch);
-
-      if (matches.length > 0 && vendorNumInDb > 0) {
-        const deduplicatedMatches = deduplicateDbRows(matches);
+      const deduplicatedMatches = pitchMatchCache.get(pitch.id) || [];
+      if (deduplicatedMatches.length > 0 && vendorNumInDb > 0) {
         realCapacity = deduplicatedMatches.reduce((max: number, r: any) => Math.max(max, parseInt(r[dbCapKey], 10) || 0), 0);
-        for (const mr of deduplicatedMatches) {
-          const val = parseFloat(mr[dbCpiKey]);
-          if (val > 0) {
-            if (realCpi === 0 || val < realCpi) {
-              realCpi = val;
+        if (realCapacity > 0) {
+          for (const mr of deduplicatedMatches) {
+            const cap = parseInt(mr[dbCapKey], 10) || 0;
+            const val = parseFloat(mr[dbCpiKey]);
+            if (cap > 0 && val > 0) {
+              if (realCpi === 0 || val < realCpi) {
+                realCpi = val;
+              }
             }
           }
-        }
-      }
-
-      if (realCapacity === 0 && vendorNumInDb > 0) {
-        if ((pitch as any)[dbCapKey] !== undefined) {
-          realCapacity = Number((pitch as any)[dbCapKey]) || 0;
-        }
-        if ((pitch as any)[dbCpiKey] !== undefined) {
-          realCpi = Number((pitch as any)[dbCpiKey]) || 0;
-        }
-      }
-
-      if (realCapacity === 0 && best.countries && best.countries.length > 0) {
-        const pitchMarket = String(pitch.market || '').toLowerCase().trim();
-        const matchesCountry = best.countries.some(c => {
-          const cLower = c.toLowerCase().trim();
-          return cLower === pitchMarket || pitchMarket.includes(cLower) || cLower.includes(pitchMarket);
-        });
-        if (matchesCountry) {
-          realCapacity = Math.max(1000, pitch.totalSampleSize || 1000);
-          realCpi = 5;
+          if (realCpi === 0) {
+            for (const mr of deduplicatedMatches) {
+              const val = parseFloat(mr[dbCpiKey]);
+              if (val > 0 && (realCpi === 0 || val < realCpi)) {
+                realCpi = val;
+              }
+            }
+          }
         }
       }
 
@@ -628,9 +718,14 @@ export default function DatabaseGrid({
       return updatedPitch;
     });
 
-    onUpdatePitches(nextPitches, true);
+    if (onAddManualVendor) {
+      onAddManualVendor(updatedVendors, nextPitches);
+    } else {
+      onUpdateVendors?.(updatedVendors);
+      onUpdatePitches(nextPitches, true);
+    }
     setToastNotification({
-      message: `Successfully added vendor ${best.name} (${best.tier.toUpperCase()}, ${best.color.toUpperCase()}) with matching market capabilities!`,
+      message: `Successfully added ${best.name} (${best.tier.toUpperCase()}, ${best.color.toUpperCase()}) with real database capabilities!`,
       type: "success"
     });
   };
@@ -699,7 +794,7 @@ export default function DatabaseGrid({
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition cursor-pointer"
           >
             <Plus className="h-4 w-4 text-emerald-600" />
-            Add Scenario
+            Add Audience
           </button>
 
           <button
@@ -738,10 +833,10 @@ export default function DatabaseGrid({
             Change the percentage slider inputs (e.g. `V1 %: 60` or double click to set values from 0% to 100%) for each vendor to adjust vendor cap instantly and modify the weighted price. Duplicate rows to perform testing side-by-side.
           </div>
           <div>
-            <span className="font-bold text-[#205080] block mb-1">Vetted Vendor & Tier Rules:</span>
-            - The system checks feasibility and capabilities across any of the **43 vetted vendors** in the database pool.<br/>
-            - Sorting/Allocation follows strict tier priority: **Tier 1 &gt; Tier 2 &gt; Tier 3 &gt; No Tier (as priority level 3)**.<br/>
-            - Tie-breaking within tiers follows quality flags: **Green (High) &gt; Yellow (Medium) &gt; Orange (Low)**, then lowest CPI first.
+            <span className="font-bold text-[#205080] block mb-1">Vetted Vendor &amp; Tier Rules:</span>
+            - The system checks feasibility and capabilities across **all active database vendors (166+ authoritative tiers, scalable to 1,000+ columns)**.<br/>
+            - Sorting/Allocation follows strict tier priority: **Tier 0 &gt; Tier 1 &gt; Tier 2 &gt; Tier 3 &gt; No Tier** (Do not use / Red excluded).<br/>
+            - Tie-breaking within tiers follows quality flags: **Green &gt; Yellow &gt; Orange &gt; Grey**, then lowest CPI first.
           </div>
         </div>
       )}
@@ -790,7 +885,7 @@ export default function DatabaseGrid({
                     <th className="p-0 w-1.5 bg-slate-300"></th>
 
                     <th colSpan={vendors ? vendors.length * 3 : 12} className="p-2 border-r border-[#2b6cb0]/20 text-center bg-emerald-50 text-emerald-950 uppercase">Externally Capabilities (Vendors)</th>
-                    <th colSpan={12} className="p-2 border-r border-slate-200 text-center bg-indigo-50 text-indigo-950 uppercase">Spent &amp; Feasibility Calculations Output</th>
+                    <th colSpan={13} className="p-2 border-r border-slate-200 text-center bg-indigo-50 text-indigo-950 uppercase">Spent &amp; Feasibility Calculations Output</th>
                     <th colSpan={3} className="p-2 text-center uppercase bg-slate-100/50">Actions</th>
                   </tr>
                   
@@ -799,9 +894,9 @@ export default function DatabaseGrid({
                     {/* General */}
                     <th className="p-2 col-static">Country</th>
                     <th className="p-2 col-static text-right font-bold text-slate-900 pr-3">Target Size</th>
-                    <th className="p-2 col-static text-center">LOI</th>
-                    <th className="p-2 col-static text-center">IR%</th>
                     <th className="p-2 col-static text-center">IR Universe</th>
+                    <th className="p-2 col-static text-center">IR%</th>
+                    <th className="p-2 col-static text-center">LOI</th>
                     <th className="p-2 col-static text-center">Quotas</th>
                     
                     {/* NEW SEPARATOR Label */}
@@ -821,12 +916,12 @@ export default function DatabaseGrid({
                       const vIdx = idx + 1;
                       const isBgOdd = vIdx % 2 === 1;
                       const bgClass = isBgOdd ? 'bg-emerald-50/70' : 'bg-emerald-50/20';
-                      const textClass = isBgOdd ? 'text-emerald-950' : 'text-emerald-850';
+                      const textClass = isBgOdd ? 'text-emerald-950' : 'text-emerald-800';
                       const borderClass = vIdx === vendors?.length ? 'border-r border-slate-200' : '';
                       return (
                         <React.Fragment key={vIdx}>
                           <th className={`p-1.5 text-center ${bgClass} font-semibold ${textClass}`}>{vendor.name} Max</th>
-                          <th className={`p-1.5 text-center ${bgClass} font-semibold text-slate-850`}>{vendor.name} Used</th>
+                          <th className={`p-1.5 text-center ${bgClass} font-semibold text-slate-800`}>{vendor.name} Used</th>
                           <th className={`p-1.5 text-center ${bgClass} font-semibold text-slate-700 ${borderClass}`}>{vendor.name} CPI</th>
                         </React.Fragment>
                       );
@@ -838,8 +933,8 @@ export default function DatabaseGrid({
                     <th className="p-2 text-right text-rose-600 font-bold" title="Missing sample as a percentage of target size">missing %</th>
                     <th className="p-2 text-right text-[#205080]" title="Specs Potential max feasible">max feasible</th>
                     <th className="p-2 text-center text-slate-800">Internal/Ext Share</th>
-                    <th className="p-2 text-center text-slate-705 font-bold" title="Number of external vendors utilized">Nr of vendors</th>
-                    <th className="p-2 text-right text-emerald-850 font-bold">Weighted CPI</th>
+                    <th className="p-2 text-center text-slate-700 font-bold" title="Number of external vendors utilized">Nr of vendors</th>
+                    <th className="p-2 text-right text-emerald-800 font-bold">Weighted CPI</th>
                     <th className="p-2 text-right text-indigo-950 font-bold">Targeted CPI</th>
                     <th className="p-2 text-right text-slate-800">PM Fee</th>
                     <th className="p-2 text-center">Comparability</th>
@@ -890,11 +985,25 @@ export default function DatabaseGrid({
                     // Max potential penalized internal feasibility as % of target sample size (can exceed 100%)
                     const maxFeasibleInternalPct = pitch.totalSampleSize > 0 ? Math.round((pitch.internal * penaltyMultiplier / pitch.totalSampleSize) * 100) : 0;
 
-                    // Max Potential Feasible (considering all available vendors + internal + overlap)
+                    // Mirror vendor exceeded check: red highlight when Internal Used % exceeds penalized internal max feasible
+                    const internalFeasibleCap = Math.round(pitch.internal * penaltyMultiplier);
+                    const internalMaxFeasiblePctExact = pitch.totalSampleSize > 0 ? (internalFeasibleCap / pitch.totalSampleSize * 100) : 0;
+                    const internalUsedPctExact = pitch.internalPctOverride !== undefined
+                      ? pitch.internalPctOverride
+                      : (pitch.totalSampleSize > 0 ? ((alloc.allocatedInternal || 0) / pitch.totalSampleSize * 100) : 0);
+                    const isInternalExceeded = internalUsedPctExact > internalMaxFeasiblePctExact + 0.01;
+
+                    // Max Potential Feasible (considering all available non-banned vendors + internal + overlap)
                     let potentialPanels = 0;
                     if (Number(pitch.internal || 0) > 0) potentialPanels++;
                     const numVendorsForMax = vendors ? vendors.length : 4;
                     for (let idx = 0; idx < numVendorsForMax; idx++) {
+                      const slot = vendors && vendors[idx];
+                      const tierLower = String(slot?.tier || '').toLowerCase();
+                      const colorLower = String(slot?.color || '').toLowerCase();
+                      if (tierLower.includes('do not use') || colorLower === 'red') {
+                        continue;
+                      }
                       if ((Number((pitch as any)[`vendor${idx + 1}`]) || 0) > 0) {
                         potentialPanels++;
                       }
@@ -914,7 +1023,15 @@ export default function DatabaseGrid({
                     }
 
                     const potentialPenaltyMultiplier = 1 - potentialPenaltyPct / 100;
-                    const maxPotentialExternal = Array.from({ length: numVendorsForMax }).reduce((acc: number, _, idx) => acc + (Number((pitch as any)[`vendor${idx + 1}`]) || 0), 0) as number;
+                    const maxPotentialExternal = Array.from({ length: numVendorsForMax }).reduce((acc: number, _, idx) => {
+                      const slot = vendors && vendors[idx];
+                      const tierLower = String(slot?.tier || '').toLowerCase();
+                      const colorLower = String(slot?.color || '').toLowerCase();
+                      if (tierLower.includes('do not use') || colorLower === 'red') {
+                        return acc;
+                      }
+                      return acc + (Number((pitch as any)[`vendor${idx + 1}`]) || 0);
+                    }, 0) as number;
                     const displayMaxPotential = Math.round((Number(pitch.internal || 0) + maxPotentialExternal) * potentialPenaltyMultiplier);
                     const maxPotentialFeasiblePct = pitch.totalSampleSize > 0 ? Math.round((displayMaxPotential / pitch.totalSampleSize) * 100) : 0;
 
@@ -983,7 +1100,8 @@ export default function DatabaseGrid({
                     const rowOpCosts = (alloc.externalCost || 0) + (alloc.internalCostRef || 0);
                     const rowOpPct = rowRevenue > 0 ? ((rowRevenue - rowOpCosts) / rowRevenue) * 100 : 0;
 
-                    const pitchSpecs = getCountrySpecsByUniverse(pitch.market, pitch.irUniverse, insertedDatabase);
+                    const irStr = pitch.irPercent && pitch.irPercent > 0 ? `${Math.round(pitch.irPercent * 100)}%` : undefined;
+                    const pitchSpecs = getCountrySpecsByUniverse(pitch.market, pitch.irUniverse, insertedDatabase, irStr, pitch.loi);
 
                     const getUnfeasibleReason = (p: FeasibilityRow, specs: any): string => {
                       if (!p.market || !isValidCountry(p.market) || String(p.market).startsWith('Insert')) {
@@ -1005,7 +1123,12 @@ export default function DatabaseGrid({
                           return 'Universe not found in database for this country';
                         }
                       }
-                      const totalCap = (p.internal || 0) + (p.vendor1 || 0) + (p.vendor2 || 0) + (p.vendor3 || 0) + (p.vendor4 || 0);
+                      let totalCap = Number(p.internal || 0);
+                      for (const k of Object.keys(p)) {
+                        if (/^vendor\d+$/i.test(k)) {
+                          totalCap += Number((p as any)[k] || 0);
+                        }
+                      }
                       if (totalCap === 0) {
                         return 'Capacity is 0 in database for specified parameters';
                       }
@@ -1031,6 +1154,7 @@ export default function DatabaseGrid({
                             preExistingOptions={activeDbCountries}
                             specType="country"
                             placeholder="Insert country"
+                            disabled={!!pitch.isLocked}
                             displayValue={
                               <div className="flex items-center gap-1.5">
                                 <span className={isValidCountry(pitch.market) ? 'text-slate-900 font-bold' : 'text-slate-400 italic font-normal'}>
@@ -1071,22 +1195,23 @@ export default function DatabaseGrid({
                           )}
                         </td>
 
-                        {/* 4. LOI (1..100 range, green DB ones, grey others) */}
-                        <td className="p-2 col-static font-mono text-center">
+                        {/* 3. IR Universe (country variables) */}
+                        <td className="p-2 col-static font-medium text-slate-700 max-w-[130px]" title={pitch.irUniverse}>
                           <ComboboxCell
-                            value={pitch.loi && pitch.loi > 0 ? pitch.loi : ''}
-                            onSave={(val) => handleCellSave(pitch.id, 'loi', val)}
-                            options={pitchSpecs.loiDropdownOptions}
-                            preExistingOptions={pitchSpecs.preExistingLois}
-                            specType="loi"
-                            placeholder="Insert LOI"
-                            displayValue={pitch.loi && pitch.loi > 0 ? `${pitch.loi}m` : undefined}
-                            align="center"
-                            widthClass="w-20"
+                            value={pitch.irUniverse}
+                            onSave={(val) => handleCellSave(pitch.id, 'irUniverse', val)}
+                            options={pitchSpecs.universeDropdownOptions}
+                            preExistingOptions={pitchSpecs.preExistingUniverses}
+                            specType="universe"
+                            placeholder="Insert universe"
+                            disabled={!!pitch.isLocked}
+                            displayValue={pitch.irUniverse ? <span className="truncate max-w-[110px] inline-block align-middle">{pitch.irUniverse}</span> : undefined}
+                            align="left"
+                            widthClass="w-40"
                           />
                         </td>
 
-                        {/* 5. IR% (1%..100% range, green DB ones, grey others) */}
+                        {/* 4. IR% (1%..100% range, green DB ones, light grey non-DB) */}
                         <td className="p-2 col-static font-mono text-center font-bold text-emerald-950">
                           <ComboboxCell
                             value={pitch.irPercent && pitch.irPercent > 0 ? `${Math.round(pitch.irPercent * 100)}%` : ''}
@@ -1095,28 +1220,30 @@ export default function DatabaseGrid({
                             preExistingOptions={pitchSpecs.preExistingIrs}
                             specType="ir"
                             placeholder="Insert incidence"
+                            disabled={!!pitch.isLocked}
                             displayValue={pitch.irPercent && pitch.irPercent > 0 ? `${Math.round(pitch.irPercent * 100)}%` : undefined}
                             align="center"
                             widthClass="w-20"
                           />
                         </td>
 
-                        {/* 6. IR Universe (country variables) */}
-                        <td className="p-2 col-static font-medium text-slate-750 max-w-[130px]" title={pitch.irUniverse}>
+                        {/* 5. LOI (1..100 range, green DB ones, light grey non-DB) */}
+                        <td className="p-2 col-static font-mono text-center">
                           <ComboboxCell
-                            value={pitch.irUniverse}
-                            onSave={(val) => handleCellSave(pitch.id, 'irUniverse', val)}
-                            options={pitchSpecs.universeDropdownOptions}
-                            preExistingOptions={pitchSpecs.preExistingUniverses}
-                            specType="universe"
-                            placeholder="Insert universe"
-                            displayValue={pitch.irUniverse ? <span className="truncate max-w-[110px] inline-block align-middle">{pitch.irUniverse}</span> : undefined}
-                            align="left"
-                            widthClass="w-40"
+                            value={pitch.loi && pitch.loi > 0 ? pitch.loi : ''}
+                            onSave={(val) => handleCellSave(pitch.id, 'loi', val)}
+                            options={pitchSpecs.loiDropdownOptions}
+                            preExistingOptions={pitchSpecs.preExistingLois}
+                            specType="loi"
+                            placeholder="Insert LOI"
+                            disabled={!!pitch.isLocked}
+                            displayValue={pitch.loi && pitch.loi > 0 ? `${pitch.loi}m` : undefined}
+                            align="center"
+                            widthClass="w-20"
                           />
                         </td>
 
-                        {/* 7. Quotas (available quotas & No quotas) */}
+                        {/* 6. Quotas (available quotas & No quotas) */}
                         <td className="p-2 col-static text-slate-600 max-w-[150px]" title={pitch.quotas}>
                           <ComboboxCell
                             value={pitch.quotas || 'No quotas'}
@@ -1125,6 +1252,7 @@ export default function DatabaseGrid({
                             preExistingOptions={pitchSpecs.preExistingQuotas}
                             specType="quota"
                             placeholder="Insert quotas"
+                            disabled={!!pitch.isLocked}
                             displayValue={pitch.quotas ? <span className="truncate max-w-[130px] inline-block align-middle">{pitch.quotas}</span> : undefined}
                             align="left"
                             widthClass="w-44"
@@ -1133,13 +1261,16 @@ export default function DatabaseGrid({
 
                          {/* --- INTERNALLY 4 COLUMNS --- */}
                          {/* Visual Separator Column 1 */}
-                         <td className="p-0 bg-slate-250 border-r border-slate-350 w-1.5"></td>
+                         <td className="p-0 bg-slate-200 border-r border-slate-300 w-1.5"></td>
 
                          {/* A. Overlap Assumed */}
                          <td className="p-1 text-center bg-amber-50/40 border-r border-amber-200/40">
                            <select
                              value={pitch.overlapVariable !== undefined ? pitch.overlapVariable : 'auto'}
+                             disabled={!!pitch.isLocked}
+                             title={pitch.isLocked ? 'Row is locked — unlock to edit' : 'Overlap rate'}
                              onChange={(e) => {
+                               if (pitch.isLocked) return;
                                const val = e.target.value === 'auto' ? undefined : parseInt(e.target.value, 10);
                                const updated = pitches.map((p) => {
                                  if (p.id === pitch.id) {
@@ -1149,7 +1280,7 @@ export default function DatabaseGrid({
                                });
                                updatePitchesAndDecheck(updated);
                              }}
-                             className="bg-white text-amber-900 border border-amber-200 rounded px-1 py-0.5 text-[10px] font-mono font-bold focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer max-w-[55px] text-center shadow-xs"
+                             className="bg-white text-amber-900 border border-amber-200 rounded px-1 py-0.5 text-[10px] font-mono font-bold focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer max-w-[55px] text-center shadow-xs disabled:opacity-60 disabled:cursor-not-allowed"
                            >
                              <option value="auto">Auto</option>
                              <option value="0">0%</option>
@@ -1167,7 +1298,7 @@ export default function DatabaseGrid({
                          </td>
 
                          {/* B. Max Potential Feasible Output (including overlap penalty, can exceed 100%) */}
-                         <td className="p-2 text-center font-mono font-extrabold text-blue-750 bg-blue-50/70 border-r border-blue-200/40 text-[11px] whitespace-nowrap">
+                         <td className="p-2 text-center font-mono font-extrabold text-blue-700 bg-blue-50/70 border-r border-blue-200/40 text-[11px] whitespace-nowrap">
                            {maxPotentialFeasiblePct}%
                          </td>
 
@@ -1224,11 +1355,11 @@ export default function DatabaseGrid({
                                 onBlur={saveInlineEdit}
                                 onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
                                 autoFocus
-                                className="w-12 text-center border border-[#2b6cb0] rounded bg-white text-slate-900 font-bold"
+                                className={`w-12 text-center border rounded bg-white font-bold ${isInternalExceeded ? 'border-red-500 text-red-600' : 'border-[#2b6cb0] text-slate-900'}`}
                               />
                             ) : (
                               <span 
-                                className="cursor-pointer border-b border-dashed border-slate-300 hover:border-[#2b6cb0] font-semibold text-[#205080]"
+                                className={`cursor-pointer border-b border-dashed border-slate-300 hover:border-[#2b6cb0] font-semibold ${isInternalExceeded ? 'text-red-700 font-bold' : 'text-[#205080]'}`}
                               >
                                 {pitch.internalPctOverride !== undefined ? `${pitch.internalPctOverride}% *` : `${pitch.totalSampleSize > 0 ? Math.round((alloc.allocatedInternal || 0) / pitch.totalSampleSize * 100) : 0}%`}
                               </span>
@@ -1236,13 +1367,13 @@ export default function DatabaseGrid({
                           </td>
 
                          {/* Visual Separator Column 2 */}
-                         <td className="p-0 bg-slate-250 border-r border-slate-350 w-1.5"></td>
+                         <td className="p-0 bg-slate-200 border-r border-slate-300 w-1.5"></td>
 
                         {/* --- EXTERNALLY PROP COLUMNS (V1-V(N) Max Feasible, Used, CPI) --- */}
                         {vendorMetrics.map((vm) => {
                           const isBgOdd = vm.vIdx % 2 === 1;
                           const bgClass = isBgOdd ? 'bg-emerald-50/50' : 'bg-emerald-50/10';
-                          const textClass = isBgOdd ? 'text-emerald-800 font-bold' : 'text-emerald-850 font-semibold';
+                          const textClass = isBgOdd ? 'text-emerald-800 font-bold' : 'text-emerald-700 font-semibold';
                           const borderClass = vm.vIdx === vendorMetrics.length ? 'border-r border-slate-200' : '';
                           const allocatedVal = alloc[`allocatedVendor${vm.vIdx}`] || 0;
                           const defaultVendorUsedPct = pitch.totalSampleSize > 0 ? Math.round((allocatedVal / pitch.totalSampleSize) * 100) : 0;
@@ -1326,8 +1457,8 @@ export default function DatabaseGrid({
                                   : alloc.status === 'Oversample'
                                     ? 'text-purple-800 bg-purple-100/85 border-purple-200'
                                     : alloc.status === 'Partially Feasible' 
-                                      ? 'text-amber-805 bg-amber-100/85 border-amber-200 shadow-2xs' 
-                                      : 'text-rose-800 bg-rose-100 border-rose-250 shadow-2xs'
+                                      ? 'text-amber-800 bg-amber-100/85 border-amber-200 shadow-2xs' 
+                                      : 'text-rose-800 bg-rose-100 border-rose-200 shadow-2xs'
                               }`}
                             >
                               {alloc.status === 'Fully Feasible' ? (
@@ -1386,7 +1517,7 @@ export default function DatabaseGrid({
                           className={`p-2 text-right font-mono ${alloc.unfilledSample > 0 ? 'text-rose-600 font-bold' : 'text-slate-400'}`}
                           title={alloc.unfilledSample > 0 ? `${pitch.totalSampleSize > 0 ? Math.round((alloc.unfilledSample / pitch.totalSampleSize) * 100) : 0}% deficit` : '0% missing'}
                         >
-                          {pitch.totalSampleSize > 0 ? `${Math.round((alloc.unfilledSample / pitch.totalSampleSize) * 100)}%` : '0%'}
+                          {pitch.totalSampleSize > 0 ? `${Math.round((Math.max(0, alloc.unfilledSample) / pitch.totalSampleSize) * 100)}%` : '0%'}
                         </td>
 
                         <td className="p-2 text-right font-mono text-[#205080] font-bold">
@@ -1394,15 +1525,15 @@ export default function DatabaseGrid({
                         </td>
 
                         <td 
-                          className="p-2 text-center font-mono text-slate-755 whitespace-nowrap"
+                          className="p-2 text-center font-mono text-slate-700 whitespace-nowrap"
                           title="Calculated Internal panel share % vs external vendors share %"
                         >
-                          <span className="font-semibold text-indigo-755">{alloc.internalSharePct}%</span>
+                          <span className="font-semibold text-indigo-700">{alloc.internalSharePct}%</span>
                           <span className="text-slate-300 mx-1">/</span>
                           <span className="font-semibold text-emerald-700">{alloc.externalSharePct}%</span>
                         </td>
 
-                        <td className="p-2 text-center font-mono font-bold text-slate-705">
+                        <td className="p-2 text-center font-mono font-bold text-slate-700">
                           {alloc.numVendorsUsed}
                         </td>
 
@@ -1419,7 +1550,7 @@ export default function DatabaseGrid({
                               )}
                               {pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? (
                                 alloc.weightedCpi > pitch.targetedCpi ? (
-                                  <span className="text-red-650 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded font-mono font-bold tracking-tight text-right block">
+                                  <span className="text-red-700 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded font-mono font-bold tracking-tight text-right block">
                                     ${alloc.weightedCpi.toFixed(2)}
                                   </span>
                                 ) : (
@@ -1458,7 +1589,7 @@ export default function DatabaseGrid({
                           ) : (
                             <span 
                               onDoubleClick={() => startEditing(pitch.id, 'targetedCpi', pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? pitch.targetedCpi : '')}
-                              className="cursor-pointer border-b border-dashed border-slate-300 hover:border-[#2b6cb0] font-semibold text-slate-705"
+                              className="cursor-pointer border-b border-dashed border-slate-300 hover:border-[#2b6cb0] font-semibold text-slate-700"
                               title="Double click to edit Targeted CPI"
                             >
                               {pitch.targetedCpi !== undefined && pitch.targetedCpi > 0 ? `$${pitch.targetedCpi.toFixed(2)}` : '-'}
@@ -1480,7 +1611,7 @@ export default function DatabaseGrid({
                           ) : (
                             <span 
                               onDoubleClick={() => startEditing(pitch.id, 'pmFee', pitch.pmFee !== undefined ? pitch.pmFee : 150)}
-                              className="cursor-pointer border-b border-dashed border-slate-205 hover:border-[#2b6cb0] font-semibold"
+                              className="cursor-pointer border-b border-dashed border-slate-200 hover:border-[#2b6cb0] font-semibold"
                             >
                               ${pitch.pmFee !== undefined ? pitch.pmFee : 150}
                             </span>
@@ -1488,11 +1619,40 @@ export default function DatabaseGrid({
                         </td>
 
                         <td className="p-2 text-center">
-                          <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
-                            (pitch.comparability || 'High') === 'High' ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-amber-50 text-amber-805 border border-amber-200'
-                          }`}>
-                            {pitch.comparability || 'High'}
-                          </span>
+                          {isEditingComp ? (
+                            <select
+                              value={tempEditValue}
+                              onChange={(e) => {
+                                setTempEditValue(e.target.value);
+                                const updated = pitches.map(p => p.id === pitch.id ? { ...p, comparability: e.target.value } : p);
+                                updatePitchesAndDecheck(updated);
+                                setEditingCell(null);
+                              }}
+                              onBlur={() => setEditingCell(null)}
+                              autoFocus
+                              className="px-1 border border-slate-300 rounded bg-white text-[10px] font-semibold text-slate-800"
+                            >
+                              <option value="High">High</option>
+                              <option value="Medium">Medium</option>
+                              <option value="Low">Low</option>
+                            </select>
+                          ) : (
+                            <span
+                              onDoubleClick={() => startEditing(pitch.id, 'comparability', pitch.comparability || 'High')}
+                              className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
+                                pitch.isLocked ? 'cursor-not-allowed opacity-75' : 'cursor-pointer'
+                              } ${
+                                (pitch.comparability || 'High') === 'High'
+                                  ? 'bg-[#ebf8ff] text-[#2b6cb0] border border-[#bee3f8]'
+                                  : pitch.comparability === 'Medium'
+                                    ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                    : 'bg-rose-50 text-rose-800 border border-rose-200'
+                              }`}
+                              title={pitch.isLocked ? 'Row is locked — unlock to edit' : 'Double-click to change Comparability'}
+                            >
+                              {pitch.comparability || 'High'}
+                            </span>
+                          )}
                         </td>
 
                         <td className="p-2 text-right font-mono text-slate-900 font-bold">
@@ -1500,7 +1660,7 @@ export default function DatabaseGrid({
                         </td>
 
                         <td className="p-2 text-right font-mono font-bold border-r border-slate-200">
-                          <span className={`px-2 py-0.5 rounded ${rowOpPct >= 0 ? 'bg-emerald-50 text-emerald-850' : 'bg-rose-50 text-rose-850'}`}>
+                          <span className={`px-2 py-0.5 rounded ${rowOpPct >= 0 ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'}`}>
                             {rowOpPct.toFixed(1)}%
                           </span>
                         </td>
